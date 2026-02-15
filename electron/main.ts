@@ -24,6 +24,8 @@ const EXECUTABLE_EXTENSIONS = new Set([".exe", ".bat", ".cmd", ".com"]);
 const SMOKE_LAUNCH_ARG_PREFIX = "--smoke-launch-item=";
 const SMOKE_ENTER_ARG_PREFIX = "--smoke-enter-item=";
 const LOCAL_STORAGE_ROOT_DIR = "papa-launcher";
+const WIDGET_SIZE_PERSIST_DEBOUNCE_MS = 420;
+const MIN_WIDGET_HEIGHT_PX = 600;
 
 let mainWindow: BrowserWindow | null = null;
 let cachedConfigRaw: LauncherConfig | null = null;
@@ -41,6 +43,9 @@ let widgetOutsideClickWatcher: WindowsOutsideClickWatcher | null = null;
 let widgetToggleShortcut: string | null = null;
 let smokeEnterExpectedItemId: string | null = null;
 let smokeEnterLaunchMatched = false;
+let quitFallbackTimer: NodeJS.Timeout | null = null;
+let widgetSizePersistTimer: NodeJS.Timeout | null = null;
+let lastPersistedWidgetSize: { width: number; height: number } | null = null;
 
 function configureRuntimePaths(): void {
   const localAppDataPath = process.env.LOCALAPPDATA?.trim();
@@ -141,6 +146,24 @@ function appendLog(message: string): void {
   }
 }
 
+function requestAppQuit(reason: string): void {
+  appendLog(`Quit requested reason=${reason}`);
+
+  if (quitFallbackTimer) {
+    clearTimeout(quitFallbackTimer);
+    quitFallbackTimer = null;
+  }
+
+  app.quit();
+
+  // In rare cases quit can be ignored by environment hooks.
+  // Force-exit after grace period to guarantee Exit button behavior.
+  quitFallbackTimer = setTimeout(() => {
+    appendLog(`Quit fallback forced exit reason=${reason}`);
+    app.exit(0);
+  }, 1600);
+}
+
 function formatUnknownError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -174,19 +197,61 @@ function toAbsolutePath(candidate: string): string {
   return path.join(getResourcesRoot(), candidate);
 }
 
-function resolveIconPath(icon: string | undefined): string | undefined {
-  if (!icon) {
+function getMimeTypeFromPath(filePath: string): string | null {
+  const extension = path.extname(filePath).toLowerCase();
+  switch (extension) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".svg":
+      return "image/svg+xml";
+    case ".ico":
+      return "image/x-icon";
+    default:
+      return null;
+  }
+}
+
+function toImageDataUrl(filePath: string): string | null {
+  const mimeType = getMimeTypeFromPath(filePath);
+  if (!mimeType) {
+    return null;
+  }
+
+  try {
+    const fileBuffer = fs.readFileSync(filePath);
+    return `data:${mimeType};base64,${fileBuffer.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+function resolveRendererAssetPath(assetPath: string | undefined): string | undefined {
+  if (!assetPath) {
     return undefined;
   }
 
-  if (/^(https?:\/\/|file:\/\/|data:)/i.test(icon)) {
-    return icon;
+  if (/^(https?:\/\/|file:\/\/|data:)/i.test(assetPath)) {
+    return assetPath;
   }
 
-  const absolutePath = toAbsolutePath(icon);
+  const absolutePath = toAbsolutePath(assetPath);
 
   if (!fs.existsSync(absolutePath)) {
-    return icon;
+    return assetPath;
+  }
+
+  const dataUrl = toImageDataUrl(absolutePath);
+  if (dataUrl) {
+    return dataUrl;
   }
 
   return pathToFileURL(absolutePath).toString();
@@ -195,9 +260,13 @@ function resolveIconPath(icon: string | undefined): string | undefined {
 function toRendererConfig(config: LauncherConfig): LauncherConfig {
   return {
     ...config,
+    app: {
+      ...config.app,
+      emptyStateImage: resolveRendererAssetPath(config.app.emptyStateImage),
+    },
     items: config.items.map((item) => ({
       ...item,
-      icon: resolveIconPath(item.icon),
+      icon: resolveRendererAssetPath(item.icon),
     })),
   };
 }
@@ -295,17 +364,17 @@ function loadConfig(): ApiResult<LauncherConfig> {
   );
 }
 
-function normalizeIconForStorage(icon: string | undefined): string | undefined {
-  if (!icon) {
+function normalizeRendererAssetForStorage(assetPath: string | undefined): string | undefined {
+  if (!assetPath) {
     return undefined;
   }
 
-  if (!icon.startsWith("file://")) {
-    return icon;
+  if (!assetPath.startsWith("file://")) {
+    return assetPath;
   }
 
   try {
-    const absolutePath = fileURLToPath(icon);
+    const absolutePath = fileURLToPath(assetPath);
     const rootCandidates = [getResourcesRoot(), getProjectRoot()];
 
     for (const root of rootCandidates) {
@@ -319,7 +388,7 @@ function normalizeIconForStorage(icon: string | undefined): string | undefined {
 
     return normalizePathToPosix(absolutePath);
   } catch {
-    return icon;
+    return assetPath;
   }
 }
 
@@ -328,10 +397,16 @@ function saveConfig(input: unknown): SaveConfigResult {
     typeof input === "object" && input !== null
       ? {
           ...(input as LauncherConfig),
+          app: {
+            ...(input as LauncherConfig).app,
+            emptyStateImage: normalizeRendererAssetForStorage(
+              (input as LauncherConfig).app?.emptyStateImage,
+            ),
+          },
           items: Array.isArray((input as LauncherConfig).items)
             ? (input as LauncherConfig).items.map((item) => ({
                 ...item,
-                icon: normalizeIconForStorage(item.icon),
+                icon: normalizeRendererAssetForStorage(item.icon),
               }))
             : (input as LauncherConfig).items,
         }
@@ -688,6 +763,99 @@ function getCachedConfig(): ApiResult<LauncherConfig> {
   return { ok: true, data: cachedConfigRaw };
 }
 
+function clearWidgetSizePersistTimer(): void {
+  if (!widgetSizePersistTimer) {
+    return;
+  }
+  clearTimeout(widgetSizePersistTimer);
+  widgetSizePersistTimer = null;
+}
+
+function persistWidgetSize(width: number, height: number, trigger: string): void {
+  const normalizedWidth = Math.max(1, Math.round(width));
+  const normalizedHeight = Math.max(MIN_WIDGET_HEIGHT_PX, Math.round(height));
+
+  if (
+    lastPersistedWidgetSize &&
+    lastPersistedWidgetSize.width === normalizedWidth &&
+    lastPersistedWidgetSize.height === normalizedHeight
+  ) {
+    return;
+  }
+
+  const configResult = getCachedConfig();
+  if (!configResult.ok) {
+    appendLog(
+      `Widget size save skipped trigger=${trigger} reason=config-not-ready details=${
+        configResult.error.details ?? configResult.error.message
+      }`,
+    );
+    return;
+  }
+
+  const currentConfig = configResult.data;
+  const currentWidget = currentConfig.app.widget ?? {};
+  if (
+    currentWidget.width === normalizedWidth &&
+    currentWidget.height === normalizedHeight
+  ) {
+    lastPersistedWidgetSize = { width: normalizedWidth, height: normalizedHeight };
+    return;
+  }
+
+  const saveResult = saveConfig({
+    ...currentConfig,
+    app: {
+      ...currentConfig.app,
+      widget: {
+        ...currentWidget,
+        width: normalizedWidth,
+        height: normalizedHeight,
+      },
+    },
+  });
+
+  if (!saveResult.ok) {
+    appendLog(
+      `Widget size save failed trigger=${trigger} code=${saveResult.error.code} details=${
+        saveResult.error.details ?? saveResult.error.message
+      }`,
+    );
+    return;
+  }
+
+  lastPersistedWidgetSize = { width: normalizedWidth, height: normalizedHeight };
+  appendLog(
+    `Widget size saved trigger=${trigger} width=${normalizedWidth} height=${normalizedHeight}`,
+  );
+}
+
+function scheduleWidgetSizePersistence(trigger: string): void {
+  if (!mainWindow || mainWindow.isDestroyed() || !widgetModeEnabled) {
+    return;
+  }
+
+  clearWidgetSizePersistTimer();
+  widgetSizePersistTimer = setTimeout(() => {
+    widgetSizePersistTimer = null;
+    if (!mainWindow || mainWindow.isDestroyed() || !widgetModeEnabled) {
+      return;
+    }
+    const bounds = mainWindow.getBounds();
+    persistWidgetSize(bounds.width, bounds.height, trigger);
+  }, WIDGET_SIZE_PERSIST_DEBOUNCE_MS);
+}
+
+function flushWidgetSizePersistence(trigger: string): void {
+  clearWidgetSizePersistTimer();
+  if (!mainWindow || mainWindow.isDestroyed() || !widgetModeEnabled) {
+    return;
+  }
+
+  const bounds = widgetHomeBounds ?? mainWindow.getBounds();
+  persistWidgetSize(bounds.width, bounds.height, trigger);
+}
+
 function getWidgetBounds(config: LauncherConfig["app"]): {
   width: number;
   height: number;
@@ -696,7 +864,7 @@ function getWidgetBounds(config: LauncherConfig["app"]): {
 } {
   const widget = config.widget ?? {};
   const width = widget.width ?? 460;
-  const height = widget.height ?? 760;
+  const height = Math.max(MIN_WIDGET_HEIGHT_PX, widget.height ?? 760);
   const offsetX = widget.offsetX ?? 0;
   const offsetY = widget.offsetY ?? 0;
   const anchor = widget.anchor ?? "bottom-right";
@@ -1000,17 +1168,35 @@ function createMainWindow(): void {
   const widgetBounds = getWidgetBounds(appConfig);
   const widget = appConfig.widget ?? {};
   const blurBehavior = widget.blurBehavior ?? (widget.hideOnBlur ? "hide" : "none");
-  const hideTrigger = widget.hideTrigger ?? "outside-click";
+  const configuredHideTrigger = widget.hideTrigger ?? "outside-click";
+  const shouldFallbackOutsideClickTrigger =
+    isWidgetMode &&
+    process.platform === "win32" &&
+    app.isPackaged &&
+    configuredHideTrigger === "outside-click";
+  const hideTrigger = shouldFallbackOutsideClickTrigger
+    ? "blur"
+    : configuredHideTrigger;
   const widgetResizable = isWidgetMode ? (widget.resizable ?? false) : true;
   const dockOnBlurBehavior =
     blurBehavior === "dock-right-edge" || blurBehavior === "windows-docking";
+
+  if (shouldFallbackOutsideClickTrigger) {
+    appendLog(
+      "Outside-click trigger disabled in packaged Windows build; fallback to blur trigger.",
+    );
+  }
 
   widgetModeEnabled = isWidgetMode;
   widgetDocked = false;
   clearWidgetCursorWatch();
   clearWidgetFocusWatch();
   clearWidgetOutsideClickWatch();
+  clearWidgetSizePersistTimer();
   widgetHomeBounds = isWidgetMode ? { ...widgetBounds } : null;
+  lastPersistedWidgetSize = isWidgetMode
+    ? { width: widgetBounds.width, height: widgetBounds.height }
+    : null;
   widgetEdgeVisiblePx = isWidgetMode
     ? Math.max(2, Math.min(60, widget.edgeVisiblePx ?? 30))
     : 30;
@@ -1032,6 +1218,7 @@ function createMainWindow(): void {
     resizable: widgetResizable,
     minWidth: isWidgetMode && widgetResizable ? widgetBounds.width : undefined,
     maxWidth: isWidgetMode && widgetResizable ? widgetBounds.width : undefined,
+    minHeight: isWidgetMode ? MIN_WIDGET_HEIGHT_PX : undefined,
     frame: isWidgetMode ? (widget.frame ?? true) : true,
     alwaysOnTop: isWidgetMode ? (widget.alwaysOnTop ?? true) : false,
     skipTaskbar: isWidgetMode ? (widget.skipTaskbar ?? false) : false,
@@ -1105,10 +1292,28 @@ function createMainWindow(): void {
     restoreDockedWidget(false);
   });
 
+  mainWindow.on("resize", () => {
+    if (!isWidgetMode || !mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+
+    const bounds = mainWindow.getBounds();
+    widgetHomeBounds = { ...bounds };
+    scheduleWidgetSizePersistence("window-resize");
+  });
+
+  mainWindow.on("close", () => {
+    if (!isWidgetMode) {
+      return;
+    }
+    flushWidgetSizePersistence("window-close");
+  });
+
   mainWindow.on("closed", () => {
     clearWidgetCursorWatch();
     clearWidgetFocusWatch();
     clearWidgetOutsideClickWatch();
+    clearWidgetSizePersistTimer();
     widgetDocked = false;
     mainWindow = null;
   });
@@ -1214,17 +1419,29 @@ ipcMain.handle("launcher:reloadConfig", async (): Promise<ReloadResult> => {
   return loadConfig();
 });
 
-ipcMain.handle("launcher:pickLaunchTarget", async (): Promise<string | null> => {
+ipcMain.handle("launcher:quit", async (): Promise<void> => {
+  requestAppQuit("renderer-ipc");
+});
+
+ipcMain.handle(
+  "launcher:pickLaunchTarget",
+  async (_event, targetType: "file" | "folder" = "file"): Promise<string | null> => {
   try {
     const ownerWindow = BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined;
-    const options: OpenDialogOptions = {
-      title: "Select program to add",
-      properties: ["openFile"],
-      filters: [
-        { name: "Executable Files", extensions: ["exe", "bat", "cmd", "com", "lnk"] },
-        { name: "All Files", extensions: ["*"] },
-      ],
-    };
+    const pickingFolder = targetType === "folder";
+    const options: OpenDialogOptions = pickingFolder
+      ? {
+          title: "Select folder to add",
+          properties: ["openDirectory"],
+        }
+      : {
+          title: "Select file to add",
+          properties: ["openFile"],
+          filters: [
+            { name: "Executable Files", extensions: ["exe", "bat", "cmd", "com", "lnk"] },
+            { name: "All Files", extensions: ["*"] },
+          ],
+        };
     const result = ownerWindow
       ? await dialog.showOpenDialog(ownerWindow, options)
       : await dialog.showOpenDialog(options);
@@ -1235,10 +1452,42 @@ ipcMain.handle("launcher:pickLaunchTarget", async (): Promise<string | null> => 
     }
 
     const selectedPath = normalizePathToPosix(result.filePaths[0]);
-    appendLog(`Pick launch target selected path=${selectedPath}`);
+    appendLog(
+      `Pick launch target selected type=${pickingFolder ? "folder" : "file"} path=${selectedPath}`,
+    );
     return selectedPath;
   } catch (error) {
     appendLog(`Pick launch target failed: ${formatUnknownError(error)}`);
+    return null;
+  }
+  },
+);
+
+ipcMain.handle("launcher:pickEmptyStateImage", async (): Promise<string | null> => {
+  try {
+    const ownerWindow = BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined;
+    const options: OpenDialogOptions = {
+      title: "Select empty-state background image",
+      properties: ["openFile"],
+      filters: [
+        { name: "Image Files", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    };
+    const result = ownerWindow
+      ? await dialog.showOpenDialog(ownerWindow, options)
+      : await dialog.showOpenDialog(options);
+
+    if (result.canceled || result.filePaths.length === 0) {
+      appendLog("Pick empty-state image canceled.");
+      return null;
+    }
+
+    const selectedPath = normalizePathToPosix(result.filePaths[0]);
+    appendLog(`Pick empty-state image selected path=${selectedPath}`);
+    return selectedPath;
+  } catch (error) {
+    appendLog(`Pick empty-state image failed: ${formatUnknownError(error)}`);
     return null;
   }
 });
@@ -1363,11 +1612,17 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   appendLog("All windows closed.");
   if (process.platform !== "darwin") {
-    app.quit();
+    requestAppQuit("window-all-closed");
   }
 });
 
 app.on("will-quit", () => {
+  if (quitFallbackTimer) {
+    clearTimeout(quitFallbackTimer);
+    quitFallbackTimer = null;
+  }
+  clearWidgetSizePersistTimer();
+  lastPersistedWidgetSize = null;
   globalShortcut.unregisterAll();
   clearWidgetCursorWatch();
   clearWidgetFocusWatch();

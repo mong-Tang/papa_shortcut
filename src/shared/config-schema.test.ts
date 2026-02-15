@@ -9,6 +9,7 @@ describe("launcherConfigSchema", () => {
         title: "Papa Launcher",
         fullscreen: false,
         mode: "widget",
+        emptyStateImage: "C:/images/empty-state.png",
         widget: {
           width: 460,
           height: 760,
@@ -102,5 +103,30 @@ describe("launcherConfigSchema", () => {
 
     const result = launcherConfigSchema.safeParse(invalid);
     expect(result.success).toBe(false);
+  });
+
+  it("rejects 'all' as an item category", () => {
+    const invalid = {
+      version: 2,
+      app: {
+        title: "Papa Launcher",
+        fullscreen: false,
+      },
+      categories: [{ id: "all", label: "all" }],
+      items: [
+        {
+          id: "sample",
+          name: "Sample",
+          categoryId: "all",
+          target: "C:/sample.exe",
+        },
+      ],
+    };
+
+    const result = launcherConfigSchema.safeParse(invalid);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain("reserved for filtering only");
+    }
   });
 });

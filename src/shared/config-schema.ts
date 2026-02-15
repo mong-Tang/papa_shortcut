@@ -31,6 +31,7 @@ const launcherAppSchema = z.object({
     })
     .optional(),
   theme: nonEmptyText.optional(),
+  emptyStateImage: nonEmptyText.optional(),
 });
 
 const launcherCategorySchema = z.object({
@@ -79,6 +80,14 @@ export const launcherConfigSchema = z
         });
       }
       itemIds.add(item.id);
+
+      if (item.categoryId === "all") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["items"],
+          message: `Category id 'all' is reserved for filtering only in item '${item.id}'`,
+        });
+      }
 
       if (!categoryIds.has(item.categoryId)) {
         ctx.addIssue({

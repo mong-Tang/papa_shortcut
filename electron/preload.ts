@@ -14,8 +14,14 @@ const launcherApi = {
   reloadConfig: (): Promise<ReloadResult> => {
     return ipcRenderer.invoke("launcher:reloadConfig");
   },
-  pickLaunchTarget: (): Promise<string | null> => {
-    return ipcRenderer.invoke("launcher:pickLaunchTarget");
+  quit: (): Promise<void> => {
+    return ipcRenderer.invoke("launcher:quit");
+  },
+  pickLaunchTarget: (targetType: "file" | "folder"): Promise<string | null> => {
+    return ipcRenderer.invoke("launcher:pickLaunchTarget", targetType);
+  },
+  pickEmptyStateImage: (): Promise<string | null> => {
+    return ipcRenderer.invoke("launcher:pickEmptyStateImage");
   },
   launchItem: (itemId: string): Promise<LaunchResult> => {
     return ipcRenderer.invoke("launcher:launchItem", itemId);

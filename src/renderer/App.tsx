@@ -7,15 +7,117 @@ interface ErrorModal {
   details?: string;
 }
 
+interface CategoryChip {
+  id: string;
+  label: string;
+  kind: "main" | "all";
+}
+
+type CoreCategoryId = "document" | "game" | "web" | "tool";
+
+const ALL_FILTER_ID = "__all__";
+const CORE_CATEGORY_DEFAULT_LABELS: Record<CoreCategoryId, string> = {
+  document: "문서",
+  game: "게임",
+  web: "웹",
+  tool: "도구",
+};
+const CORE_CATEGORY_ORDER: CoreCategoryId[] = ["document", "game", "web", "tool"];
+const MAIN_CATEGORY_CHIPS: CategoryChip[] = CORE_CATEGORY_ORDER.map((id) => ({
+  id,
+  label: CORE_CATEGORY_DEFAULT_LABELS[id],
+  kind: "main",
+}));
+const ALL_CATEGORY_CHIP: CategoryChip = { id: ALL_FILTER_ID, label: "전체", kind: "all" };
+
 function normalizeText(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function ensureAllCategory(config: LauncherConfig): LauncherCategory[] {
-  if (config.categories.some((category) => category.id === "all")) {
-    return config.categories;
+function getEditableCategories(categories: LauncherCategory[]): LauncherCategory[] {
+  return categories.filter((category) => category.id !== "all");
+}
+
+function ensureCoreCategories(config: LauncherConfig): LauncherConfig {
+  const existingIds = new Set(config.categories.map((category) => category.id));
+  const missingCoreCategories = MAIN_CATEGORY_CHIPS
+    .filter((chip) => !existingIds.has(chip.id))
+    .map((chip) => ({ id: chip.id, label: chip.label }));
+
+  if (missingCoreCategories.length === 0) {
+    return config;
   }
-  return [{ id: "all", label: "All" }, ...config.categories];
+
+  return {
+    ...config,
+    categories: [...config.categories, ...missingCoreCategories],
+  };
+}
+
+function toCoreCategoryId(value: string): CoreCategoryId | null {
+  switch (value) {
+    case "document":
+    case "game":
+    case "web":
+    case "tool":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function getCoreCategoryLabels(categories: LauncherCategory[]): Record<CoreCategoryId, string> {
+  const labels: Record<CoreCategoryId, string> = {
+    ...CORE_CATEGORY_DEFAULT_LABELS,
+  };
+
+  for (const category of categories) {
+    const coreId = toCoreCategoryId(category.id);
+    if (!coreId) {
+      continue;
+    }
+    const normalizedLabel = category.label.trim();
+    labels[coreId] =
+      normalizedLabel.length > 0 ? normalizedLabel : CORE_CATEGORY_DEFAULT_LABELS[coreId];
+  }
+
+  return labels;
+}
+
+function orderEditorCategories(categories: LauncherCategory[]): LauncherCategory[] {
+  const byId = new Map(categories.map((category) => [category.id, category] as const));
+  const ordered: LauncherCategory[] = [];
+
+  for (const chip of MAIN_CATEGORY_CHIPS) {
+    const coreCategory = byId.get(chip.id);
+    if (!coreCategory) {
+      continue;
+    }
+    ordered.push(coreCategory);
+    byId.delete(chip.id);
+  }
+
+  for (const category of categories) {
+    if (!byId.has(category.id)) {
+      continue;
+    }
+    ordered.push(category);
+    byId.delete(category.id);
+  }
+
+  return ordered;
+}
+
+function clampContextMenuPosition(position: { x: number; y: number }): { x: number; y: number } {
+  const MENU_WIDTH = 200;
+  const MENU_HEIGHT = 56;
+  const PADDING = 8;
+  const maxX = Math.max(PADDING, window.innerWidth - MENU_WIDTH - PADDING);
+  const maxY = Math.max(PADDING, window.innerHeight - MENU_HEIGHT - PADDING);
+  return {
+    x: Math.min(Math.max(position.x, PADDING), maxX),
+    y: Math.min(Math.max(position.y, PADDING), maxY),
+  };
 }
 
 function toConfigError(result: ApiResult<LauncherConfig>): ErrorModal | null {
@@ -79,6 +181,41 @@ function cloneItems(items: LauncherItem[]): LauncherItem[] {
   }));
 }
 
+function mergeItemsByCategory(
+  sourceItems: LauncherItem[],
+  categoryId: string,
+  scopedItems: LauncherItem[],
+): LauncherItem[] {
+  const scopedById = new Map(scopedItems.map((item) => [item.id, item] as const));
+  const merged: LauncherItem[] = [];
+
+  for (const item of sourceItems) {
+    if (item.categoryId === categoryId) {
+      const replacement = scopedById.get(item.id);
+      if (replacement) {
+        merged.push(replacement);
+        scopedById.delete(item.id);
+      }
+      continue;
+    }
+
+    if (scopedById.has(item.id)) {
+      continue;
+    }
+
+    merged.push(item);
+  }
+
+  for (const item of scopedItems) {
+    if (scopedById.has(item.id)) {
+      merged.push(item);
+      scopedById.delete(item.id);
+    }
+  }
+
+  return merged;
+}
+
 function normalizeItem(item: LauncherItem): LauncherItem {
   return {
     ...item,
@@ -118,6 +255,9 @@ function validateItems(items: LauncherItem[], categories: LauncherCategory[]): s
     if (!categoryId) {
       return `Item #${row}: Category is required.`;
     }
+    if (categoryId === "all") {
+      return `Item #${row}: Category 'all' is filter-only.`;
+    }
     if (!categoryIds.has(categoryId)) {
       return `Item #${row}: Unknown category '${categoryId}'.`;
     }
@@ -135,39 +275,68 @@ export default function App(): JSX.Element {
   const [configError, setConfigError] = useState<ErrorModal | null>(null);
 
   const [search, setSearch] = useState("");
-  const [selectedCategoryId, setSelectedCategoryId] = useState("all");
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [statusText, setStatusText] = useState("Preparing widget...");
   const [launchingItemId, setLaunchingItemId] = useState<string | null>(null);
   const [errorModal, setErrorModal] = useState<ErrorModal | null>(null);
+  const [quitting, setQuitting] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorItems, setEditorItems] = useState<LauncherItem[]>([]);
   const [editorOriginalItems, setEditorOriginalItems] = useState<LauncherItem[]>([]);
+  const [editorCategoryId, setEditorCategoryId] = useState<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
+  const [addTargetTypeModalOpen, setAddTargetTypeModalOpen] = useState(false);
+  const [renameModalOpen, setRenameModalOpen] = useState(false);
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameDraftLabels, setRenameDraftLabels] = useState<Record<CoreCategoryId, string>>({
+    ...CORE_CATEGORY_DEFAULT_LABELS,
+  });
+  const [emptyStateMenuPosition, setEmptyStateMenuPosition] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const [emptyStateImageSaving, setEmptyStateImageSaving] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const categories = useMemo(() => {
-    if (!config) {
-      return [];
-    }
-    return ensureAllCategory(config);
-  }, [config]);
+  const categoryChips = useMemo<CategoryChip[]>(() => {
+    const labelByCoreId = getCoreCategoryLabels(config?.categories ?? []);
+    const mainCategoryChips = CORE_CATEGORY_ORDER.map((id) => ({
+      id,
+      label: labelByCoreId[id],
+      kind: "main" as const,
+    }));
+    const allCategoryLabel =
+      config?.categories.find((category) => category.id === "all")?.label ??
+      ALL_CATEGORY_CHIP.label;
+    return [...mainCategoryChips, { ...ALL_CATEGORY_CHIP, label: allCategoryLabel }];
+  }, [config?.categories]);
 
   const editableCategories = useMemo(() => config?.categories ?? [], [config]);
+  const editorCategoryOptions = useMemo(() => {
+    return orderEditorCategories(getEditableCategories(editableCategories));
+  }, [editableCategories]);
+  const editorSelectedCategory = useMemo(
+    () => editorCategoryOptions.find((category) => category.id === editorCategoryId) ?? null,
+    [editorCategoryId, editorCategoryOptions],
+  );
+  const emptyStateImageSrc = useMemo(
+    () => getIconSrc(config?.app.emptyStateImage),
+    [config?.app.emptyStateImage],
+  );
+  const isIdleEmptyState = selectedCategoryId === null;
 
   const filteredItems = useMemo(() => {
-    if (!config) {
+    if (!config || selectedCategoryId === null) {
       return [];
     }
 
     const normalizedSearch = normalizeText(search);
 
     return config.items.filter((item) => {
-      const categoryMatched =
-        selectedCategoryId === "all" || item.categoryId === selectedCategoryId;
+      const categoryMatched = selectedCategoryId === ALL_FILTER_ID || item.categoryId === selectedCategoryId;
       if (!categoryMatched) {
         return false;
       }
@@ -222,11 +391,17 @@ export default function App(): JSX.Element {
       return;
     }
 
-    setConfig(result.data);
-    setSelectedCategoryId("all");
+    const normalizedConfig = ensureCoreCategories(result.data);
+    setConfig(normalizedConfig);
+    setSelectedCategoryId(null);
     setSelectedIndex(0);
-    setStatusText(`Loaded ${result.data.items.length} items.`);
+    setEmptyStateMenuPosition(null);
+    setStatusText(`Loaded ${normalizedConfig.items.length} items.`);
     setLoading(false);
+
+    if (normalizedConfig !== result.data) {
+      void window.launcherApi.saveConfig(normalizedConfig).catch(() => undefined);
+    }
   }
 
   function openEditor(): void {
@@ -234,11 +409,149 @@ export default function App(): JSX.Element {
       return;
     }
 
-    const cloned = cloneItems(config.items);
-    setEditorItems(cloned);
-    setEditorOriginalItems(cloneItems(cloned));
-    setEditingItemId(cloned[0]?.id ?? null);
+    setEditorItems([]);
+    setEditorOriginalItems([]);
+    setEditorCategoryId(null);
+    setEditingItemId(null);
     setEditorOpen(true);
+  }
+
+  function syncEditorCategoryItems(
+    sourceConfig: LauncherConfig,
+    categoryId: string | null,
+    preferredItemId?: string | null,
+  ): void {
+    setEditorCategoryId(categoryId);
+
+    if (!categoryId) {
+      setEditorItems([]);
+      setEditorOriginalItems([]);
+      setEditingItemId(null);
+      return;
+    }
+
+    const scopedItems = cloneItems(
+      sourceConfig.items.filter((item) => item.categoryId === categoryId),
+    );
+    setEditorItems(scopedItems);
+    setEditorOriginalItems(cloneItems(scopedItems));
+
+    const nextEditingItemId =
+      preferredItemId && scopedItems.some((item) => item.id === preferredItemId)
+        ? preferredItemId
+        : scopedItems[0]?.id ?? null;
+    setEditingItemId(nextEditingItemId);
+  }
+
+  function changeEditorCategory(nextCategoryId: string | null): void {
+    if (!config) {
+      return;
+    }
+
+    if (nextCategoryId === editorCategoryId) {
+      return;
+    }
+
+    if (editorSaving) {
+      return;
+    }
+
+    if (editorDirty) {
+      const shouldSwitch = window.confirm(
+        "Unsaved changes will be lost. Change category?",
+      );
+      if (!shouldSwitch) {
+        return;
+      }
+    }
+
+    syncEditorCategoryItems(config, nextCategoryId);
+  }
+
+  function openRenameModal(): void {
+    if (!config || editorSaving) {
+      return;
+    }
+
+    const labels = getCoreCategoryLabels(config.categories);
+    setRenameDraftLabels(labels);
+    setRenameModalOpen(true);
+  }
+
+  function closeRenameModal(): void {
+    if (renameSaving) {
+      return;
+    }
+    setRenameModalOpen(false);
+  }
+
+  async function saveRenamedCategoryLabels(): Promise<void> {
+    if (!config) {
+      return;
+    }
+
+    const nextLabels: Record<CoreCategoryId, string> = {
+      document: renameDraftLabels.document.trim(),
+      game: renameDraftLabels.game.trim(),
+      web: renameDraftLabels.web.trim(),
+      tool: renameDraftLabels.tool.trim(),
+    };
+
+    for (const id of CORE_CATEGORY_ORDER) {
+      if (!nextLabels[id]) {
+        setErrorModal({
+          title: "Rename Failed",
+          message: "Category button name cannot be empty.",
+        });
+        return;
+      }
+    }
+
+    const uniqueLabels = new Set(Object.values(nextLabels));
+    if (uniqueLabels.size !== CORE_CATEGORY_ORDER.length) {
+      setErrorModal({
+        title: "Rename Failed",
+        message: "Category button names must be unique.",
+      });
+      return;
+    }
+
+    const normalizedConfig = ensureCoreCategories(config);
+    const renamedConfig: LauncherConfig = {
+      ...normalizedConfig,
+      categories: normalizedConfig.categories.map((category) => {
+        const coreId = toCoreCategoryId(category.id);
+        if (!coreId) {
+          return category;
+        }
+        return {
+          ...category,
+          label: nextLabels[coreId],
+        };
+      }),
+    };
+
+    setRenameSaving(true);
+    const result = await window.launcherApi.saveConfig(renamedConfig);
+    setRenameSaving(false);
+
+    if (!result.ok) {
+      setErrorModal({
+        title: "Rename Failed",
+        message: result.error.message,
+        details: result.error.details,
+      });
+      return;
+    }
+
+    const savedConfig = ensureCoreCategories(result.data);
+    setConfig(savedConfig);
+    setRenameModalOpen(false);
+    setStatusText("Category button names updated.");
+
+    if (editorOpen && editorCategoryId) {
+      syncEditorCategoryItems(savedConfig, editorCategoryId, editingItemId);
+    }
   }
 
   function closeEditor(force = false): void {
@@ -256,16 +569,54 @@ export default function App(): JSX.Element {
     setEditorOpen(false);
     setEditorItems([]);
     setEditorOriginalItems([]);
+    setEditorCategoryId(null);
     setEditingItemId(null);
+    setAddTargetTypeModalOpen(false);
+    setRenameModalOpen(false);
   }
 
-  async function createEditorItem(): Promise<void> {
-    const selectedTarget = await window.launcherApi.pickLaunchTarget();
+  function openAddTargetTypeModal(): void {
+    if (!config) {
+      return;
+    }
+
+    if (editorCategoryOptions.length === 0) {
+      setErrorModal({
+        title: "Add Item Failed",
+        message: "No valid category is available. Add categories first.",
+      });
+      return;
+    }
+
+    if (!editorCategoryId) {
+      setErrorModal({
+        title: "Add Item Failed",
+        message: "Select a category first.",
+      });
+      return;
+    }
+
+    setAddTargetTypeModalOpen(true);
+  }
+
+  function closeAddTargetTypeModal(): void {
+    if (editorSaving) {
+      return;
+    }
+    setAddTargetTypeModalOpen(false);
+  }
+
+  async function createEditorItem(targetType: "file" | "folder"): Promise<void> {
+    if (!config || !editorCategoryId) {
+      return;
+    }
+
+    setAddTargetTypeModalOpen(false);
+    const selectedTarget = await window.launcherApi.pickLaunchTarget(targetType);
     if (!selectedTarget) {
       return;
     }
 
-    const defaultCategory = editableCategories[0]?.id ?? "all";
     const itemId = `item-${Date.now()}`;
     const normalizedTarget = selectedTarget.trim();
     const inferredName = inferItemNameFromTarget(normalizedTarget);
@@ -274,13 +625,76 @@ export default function App(): JSX.Element {
     const newItem: LauncherItem = {
       id: itemId,
       name: inferredName,
-      categoryId: defaultCategory,
+      categoryId: editorCategoryId,
       target: normalizedTarget,
       workingDir: inferredWorkingDir,
     };
 
-    setEditorItems((current) => [...current, newItem]);
-    setEditingItemId(itemId);
+    const nextScopedItems = [...cloneItems(editorItems), newItem];
+    const mergedItems = mergeItemsByCategory(config.items, editorCategoryId, nextScopedItems);
+
+    const validationError = validateItems(mergedItems, editableCategories);
+    if (validationError) {
+      setErrorModal({
+        title: "Add Item Failed",
+        message: validationError,
+      });
+      return;
+    }
+
+    setEditorSaving(true);
+    const result = await window.launcherApi.saveConfig({
+      ...config,
+      items: mergedItems.map((item) => normalizeItem(item)),
+    });
+    setEditorSaving(false);
+
+    if (!result.ok) {
+      setErrorModal({
+        title: "Add Item Failed",
+        message: result.error.message,
+        details: result.error.details,
+      });
+      return;
+    }
+
+    setConfig(result.data);
+    syncEditorCategoryItems(result.data, editorCategoryId, newItem.id);
+    setStatusText(`Added '${newItem.name}'.`);
+  }
+
+  async function pickEmptyStateImage(): Promise<void> {
+    if (!config) {
+      return;
+    }
+
+    setEmptyStateMenuPosition(null);
+    const selectedImage = await window.launcherApi.pickEmptyStateImage();
+    if (!selectedImage) {
+      return;
+    }
+
+    setEmptyStateImageSaving(true);
+    const result = await window.launcherApi.saveConfig({
+      ...config,
+      app: {
+        ...config.app,
+        emptyStateImage: selectedImage,
+      },
+    });
+    setEmptyStateImageSaving(false);
+
+    if (!result.ok) {
+      setErrorModal({
+        title: "Background Save Failed",
+        message: result.error.message,
+        details: result.error.details,
+      });
+      return;
+    }
+
+    setConfig(result.data);
+    setStatusText("Empty-state background updated.");
   }
 
   function updateEditingItem(patch: Partial<LauncherItem>): void {
@@ -321,7 +735,23 @@ export default function App(): JSX.Element {
       return;
     }
 
-    const validationError = validateItems(editorItems, editableCategories);
+    if (!editorCategoryId) {
+      setErrorModal({
+        title: "Save Failed",
+        message: "Select a category first.",
+      });
+      return;
+    }
+
+    const scopedItems = editorItems.map((item) =>
+      normalizeItem({
+        ...item,
+        categoryId: editorCategoryId,
+      }),
+    );
+    const mergedItems = mergeItemsByCategory(config.items, editorCategoryId, scopedItems);
+
+    const validationError = validateItems(mergedItems, editableCategories);
     if (validationError) {
       setErrorModal({
         title: "Validation Failed",
@@ -333,7 +763,7 @@ export default function App(): JSX.Element {
     setEditorSaving(true);
     const result = await window.launcherApi.saveConfig({
       ...config,
-      items: editorItems.map((item) => normalizeItem(item)),
+      items: mergedItems,
     });
     setEditorSaving(false);
 
@@ -347,8 +777,12 @@ export default function App(): JSX.Element {
     }
 
     setConfig(result.data);
-    closeEditor(true);
-    setStatusText(`Saved ${result.data.items.length} items.`);
+    syncEditorCategoryItems(result.data, editorCategoryId, editingItemId);
+    setStatusText(
+      `Saved ${scopedItems.length} items${
+        editorSelectedCategory ? ` (${editorSelectedCategory.label})` : ""
+      }.`,
+    );
   }
 
   async function runItem(item: LauncherItem): Promise<void> {
@@ -369,6 +803,29 @@ export default function App(): JSX.Element {
       message: result.error.message,
       details: result.error.details,
     });
+  }
+
+  async function quitApp(): Promise<void> {
+    if (quitting) {
+      return;
+    }
+
+    setQuitting(true);
+    setStatusText("Exiting app...");
+
+    const fallbackTimer = window.setTimeout(() => {
+      window.close();
+    }, 1000);
+
+    try {
+      await window.launcherApi.quit();
+    } catch {
+      setStatusText("Exit request failed. Closing window...");
+      window.close();
+      setQuitting(false);
+    } finally {
+      window.clearTimeout(fallbackTimer);
+    }
   }
 
   function getFocusedLauncherItem(): LauncherItem | null {
@@ -397,11 +854,35 @@ export default function App(): JSX.Element {
     if (!config) {
       return;
     }
-    const validCategoryIds = new Set(categories.map((category) => category.id));
-    if (!validCategoryIds.has(selectedCategoryId)) {
-      setSelectedCategoryId("all");
+    const validCategoryIds = new Set(categoryChips.map((category) => category.id));
+    if (selectedCategoryId !== null && !validCategoryIds.has(selectedCategoryId)) {
+      setSelectedCategoryId(null);
     }
-  }, [categories, config, selectedCategoryId]);
+  }, [categoryChips, config, selectedCategoryId]);
+
+  useEffect(() => {
+    if (selectedCategoryId !== null) {
+      setEmptyStateMenuPosition(null);
+    }
+  }, [selectedCategoryId]);
+
+  useEffect(() => {
+    if (!editorCategoryId) {
+      return;
+    }
+
+    const exists = editorCategoryOptions.some(
+      (category) => category.id === editorCategoryId,
+    );
+    if (exists) {
+      return;
+    }
+
+    setEditorCategoryId(null);
+    setEditorItems([]);
+    setEditorOriginalItems([]);
+    setEditingItemId(null);
+  }, [editorCategoryId, editorCategoryOptions]);
 
   useEffect(() => {
     if (selectedIndex < 0) {
@@ -434,11 +915,39 @@ export default function App(): JSX.Element {
         return;
       }
 
+      if (emptyStateMenuPosition && event.key === "Escape") {
+        setEmptyStateMenuPosition(null);
+        event.preventDefault();
+        return;
+      }
+
       if (!config || loading || configError) {
         return;
       }
 
       if (editorOpen) {
+        if (renameModalOpen) {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            void saveRenamedCategoryLabels();
+            return;
+          }
+
+          if (event.key === "Escape") {
+            closeRenameModal();
+            event.preventDefault();
+          }
+          return;
+        }
+
+        if (addTargetTypeModalOpen) {
+          if (event.key === "Escape") {
+            closeAddTargetTypeModal();
+            event.preventDefault();
+          }
+          return;
+        }
+
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
           event.preventDefault();
           void saveEditorItems();
@@ -456,6 +965,7 @@ export default function App(): JSX.Element {
         if (document.activeElement === searchInputRef.current) {
           searchInputRef.current?.blur();
         }
+        setEmptyStateMenuPosition(null);
         return;
       }
 
@@ -492,9 +1002,13 @@ export default function App(): JSX.Element {
     filteredItems,
     selectedItem,
     editorOpen,
+    addTargetTypeModalOpen,
+    renameModalOpen,
     errorModal,
+    emptyStateMenuPosition,
     editorDirty,
     editorSaving,
+    renameSaving,
   ]);
 
   if (loading) {
@@ -534,6 +1048,9 @@ export default function App(): JSX.Element {
             <button type="button" onClick={() => void loadConfig(true)}>
               Reload
             </button>
+            <button type="button" className="exit-btn" onClick={() => void quitApp()} disabled={quitting}>
+              {quitting ? "Exiting..." : "Exit"}
+            </button>
           </div>
         </header>
 
@@ -549,14 +1066,14 @@ export default function App(): JSX.Element {
         </div>
 
         <nav className="category-row" aria-label="Category">
-          {categories.map((category) => {
+          {categoryChips.map((category) => {
             const selected = category.id === selectedCategoryId;
             return (
               <button
                 key={category.id}
                 type="button"
                 className={`chip ${selected ? "is-selected" : ""}`}
-                onClick={() => setSelectedCategoryId(category.id)}
+                onClick={() => setSelectedCategoryId((current) => (current === category.id ? null : category.id))}
               >
                 {category.label}
               </button>
@@ -565,46 +1082,69 @@ export default function App(): JSX.Element {
         </nav>
 
         <section className="item-list" role="listbox" aria-label="Launcher items">
-          {filteredItems.length === 0 && (
-            <div className="empty">No item matches current filter.</div>
+          {isIdleEmptyState ? (
+            <div
+              className="empty-state"
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setEmptyStateMenuPosition(
+                  clampContextMenuPosition({ x: event.clientX, y: event.clientY }),
+                );
+              }}
+            >
+              {emptyStateImageSrc ? (
+                <img src={emptyStateImageSrc} alt="Empty state" />
+              ) : (
+                <div className="empty-state-placeholder">배경 그림이 없습니다.</div>
+              )}
+              <div className="empty-state-caption">
+                카테고리를 선택하세요. 우클릭으로 배경 그림을 변경할 수 있습니다.
+              </div>
+            </div>
+          ) : (
+            <>
+              {filteredItems.length === 0 && (
+                <div className="empty">No item matches current filter.</div>
+              )}
+
+              {filteredItems.map((item, index) => {
+                const selected = index === selectedIndex;
+                const launching = item.id === launchingItemId;
+                const iconSrc = getIconSrc(item.icon);
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`item-row ${selected ? "is-selected" : ""} ${launching ? "is-launching" : ""}`}
+                    aria-selected={selected}
+                    data-launcher-item-id={item.id}
+                    onMouseEnter={() => setSelectedIndex(index)}
+                    onFocus={() => setSelectedIndex(index)}
+                    onClick={() => {
+                      setSelectedIndex(index);
+                    }}
+                    onDoubleClick={() => {
+                      setSelectedIndex(index);
+                      void runItem(item);
+                    }}
+                  >
+                    <div className="item-icon">
+                      {iconSrc ? (
+                        <img src={iconSrc} alt="" />
+                      ) : (
+                        <span>{item.name.slice(0, 1).toUpperCase()}</span>
+                      )}
+                    </div>
+                    <div className="item-content">
+                      <strong>{item.name}</strong>
+                      <small>{item.target}</small>
+                    </div>
+                  </button>
+                );
+              })}
+            </>
           )}
-
-          {filteredItems.map((item, index) => {
-            const selected = index === selectedIndex;
-            const launching = item.id === launchingItemId;
-            const iconSrc = getIconSrc(item.icon);
-
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className={`item-row ${selected ? "is-selected" : ""} ${launching ? "is-launching" : ""}`}
-                aria-selected={selected}
-                data-launcher-item-id={item.id}
-                onMouseEnter={() => setSelectedIndex(index)}
-                onFocus={() => setSelectedIndex(index)}
-                onClick={() => {
-                  setSelectedIndex(index);
-                }}
-                onDoubleClick={() => {
-                  setSelectedIndex(index);
-                  void runItem(item);
-                }}
-              >
-                <div className="item-icon">
-                  {iconSrc ? (
-                    <img src={iconSrc} alt="" />
-                  ) : (
-                    <span>{item.name.slice(0, 1).toUpperCase()}</span>
-                  )}
-                </div>
-                <div className="item-content">
-                  <strong>{item.name}</strong>
-                  <small>{item.target}</small>
-                </div>
-              </button>
-            );
-          })}
         </section>
 
         <footer className="widget-footer">
@@ -622,6 +1162,25 @@ export default function App(): JSX.Element {
         </footer>
       </section>
 
+      {emptyStateMenuPosition && isIdleEmptyState && (
+        <div
+          className="context-menu-overlay"
+          role="presentation"
+          onClick={() => setEmptyStateMenuPosition(null)}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div
+            className="context-menu"
+            style={{ left: `${emptyStateMenuPosition.x}px`, top: `${emptyStateMenuPosition.y}px` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button type="button" onClick={() => void pickEmptyStateImage()} disabled={emptyStateImageSaving}>
+              {emptyStateImageSaving ? "저장 중..." : "배경 그림 선택..."}
+            </button>
+          </div>
+        </div>
+      )}
+
       {editorOpen && (
         <div className="modal-backdrop" role="presentation">
           <section className="modal editor-modal" role="dialog" aria-modal="true">
@@ -631,36 +1190,82 @@ export default function App(): JSX.Element {
 
             <div className="editor-body">
               <aside className="editor-list">
+                <label className="editor-category-select">
+                  <span>Category</span>
+                  <select
+                    value={editorCategoryId ?? ""}
+                    onChange={(event) =>
+                      changeEditorCategory(event.target.value ? event.target.value : null)
+                    }
+                    disabled={editorSaving}
+                  >
+                    <option value="">Select category...</option>
+                    {editorCategoryOptions.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.label} ({category.id})
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <div className="editor-list-actions">
-                  <button type="button" onClick={() => void createEditorItem()}>
+                  <button
+                    type="button"
+                    onClick={openRenameModal}
+                    disabled={editorSaving || addTargetTypeModalOpen || renameSaving}
+                  >
+                    버튼 리네임
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openAddTargetTypeModal}
+                    disabled={editorSaving || addTargetTypeModalOpen || renameSaving || !editorCategoryId}
+                  >
                     Add Item
                   </button>
                   <button
                     type="button"
                     className="danger"
                     onClick={onDeleteEditingItem}
-                    disabled={!editingItem}
+                    disabled={
+                      !editingItem ||
+                      editorSaving ||
+                      addTargetTypeModalOpen ||
+                      renameSaving ||
+                      !editorCategoryId
+                    }
                   >
                     Delete Item
                   </button>
                 </div>
                 <div className="editor-list-items">
-                  {editorItems.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`editor-item-row ${item.id === editingItemId ? "is-selected" : ""}`}
-                      onClick={() => setEditingItemId(item.id)}
-                    >
-                      {item.name}
-                    </button>
-                  ))}
+                  {!editorCategoryId && (
+                    <div className="editor-list-placeholder">
+                      Select a category to load items.
+                    </div>
+                  )}
+                  {editorCategoryId && editorItems.length === 0 && (
+                    <div className="editor-list-placeholder">
+                      No items in this category.
+                    </div>
+                  )}
+                  {editorCategoryId &&
+                    editorItems.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`editor-item-row ${item.id === editingItemId ? "is-selected" : ""}`}
+                        onClick={() => setEditingItemId(item.id)}
+                      >
+                        {item.name}
+                      </button>
+                    ))}
                 </div>
               </aside>
 
               <section className="editor-form">
-                {!editingItem && <p>Select an item.</p>}
-                {editingItem && (
+                {!editorCategoryId && <p>Select a category first.</p>}
+                {editorCategoryId && !editingItem && <p>Select an item.</p>}
+                {editorCategoryId && editingItem && (
                   <>
                     <label>
                       <span>ID</span>
@@ -681,19 +1286,6 @@ export default function App(): JSX.Element {
                         value={editingItem.name}
                         onChange={(event) => updateEditingItem({ name: event.target.value })}
                       />
-                    </label>
-                    <label>
-                      <span>Category</span>
-                      <select
-                        value={editingItem.categoryId}
-                        onChange={(event) => updateEditingItem({ categoryId: event.target.value })}
-                      >
-                        {editableCategories.map((category) => (
-                          <option key={category.id} value={category.id}>
-                            {category.label} ({category.id})
-                          </option>
-                        ))}
-                      </select>
                     </label>
                     <label>
                       <span>Target</span>
@@ -743,11 +1335,82 @@ export default function App(): JSX.Element {
             </div>
 
             <footer className="editor-footer">
-              <button type="button" onClick={() => closeEditor()} disabled={editorSaving}>
+              <button
+                type="button"
+                onClick={() => closeEditor()}
+                disabled={editorSaving || addTargetTypeModalOpen}
+              >
                 Cancel
               </button>
-              <button type="button" onClick={() => void saveEditorItems()} disabled={editorSaving}>
+              <button
+                type="button"
+                onClick={() => void saveEditorItems()}
+                disabled={editorSaving || addTargetTypeModalOpen || !editorCategoryId}
+              >
                 {editorSaving ? "Saving..." : "Save"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {addTargetTypeModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal add-target-modal" role="dialog" aria-modal="true">
+            <header>
+              <h2>추가 대상 선택</h2>
+            </header>
+            <p>파일 또는 폴더 중에서 추가할 대상을 선택하세요.</p>
+            <div className="classify-actions">
+              <button type="button" onClick={() => void createEditorItem("file")} disabled={editorSaving}>
+                파일
+              </button>
+              <button type="button" onClick={() => void createEditorItem("folder")} disabled={editorSaving}>
+                폴더
+              </button>
+            </div>
+            <footer className="editor-footer">
+              <button type="button" onClick={closeAddTargetTypeModal} disabled={editorSaving}>
+                취소
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {renameModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal rename-modal" role="dialog" aria-modal="true">
+            <header>
+              <h2>버튼 리네임</h2>
+            </header>
+            <p>문서/게임/웹/도구 버튼의 표시 이름을 설정합니다.</p>
+            <div className="rename-form">
+              {CORE_CATEGORY_ORDER.map((id) => (
+                <label key={id}>
+                  <span>
+                    {CORE_CATEGORY_DEFAULT_LABELS[id]} ({id})
+                  </span>
+                  <input
+                    type="text"
+                    value={renameDraftLabels[id]}
+                    onChange={(event) =>
+                      setRenameDraftLabels((current) => ({
+                        ...current,
+                        [id]: event.target.value,
+                      }))
+                    }
+                    disabled={renameSaving}
+                  />
+                </label>
+              ))}
+            </div>
+            <footer className="editor-footer">
+              <button type="button" onClick={closeRenameModal} disabled={renameSaving}>
+                취소
+              </button>
+              <button type="button" onClick={() => void saveRenamedCategoryLabels()} disabled={renameSaving}>
+                {renameSaving ? "저장 중..." : "저장"}
               </button>
             </footer>
           </section>

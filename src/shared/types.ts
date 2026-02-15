@@ -38,6 +38,7 @@ export interface LauncherAppConfig {
   mode?: "fullscreen" | "widget";
   widget?: LauncherWidgetConfig;
   theme?: string;
+  emptyStateImage?: string;
 }
 
 export interface LauncherWidgetConfig {
