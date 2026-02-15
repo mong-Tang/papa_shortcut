@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "name": "문서 모음",
+      "type": "group",
+      "children": [
+        {
+          "name": "가계부 엑셀",
+          "type": "shortcut",
+          "target": "C:/Users/USER/Documents/budget.xlsx"
+        },
+        {
+          "name": "문서 폴더",
+          "type": "shortcut",
+          "target": "C:/Users/USER/Documents"
+        }
+      ]
+    },
+    {
+      "name": "사진 모음",
+      "type": "group",
+      "children": [
+        {
+          "name": "가족 사진 폴더",
+          "type": "shortcut",
+          "target": "C:/Users/USER/Pictures/Family Album"
+        },
+        {
+          "name": "다운로드 폴더",
+          "type": "shortcut",
+          "target": "C:/Users/USER/Downloads"
+        }
+      ]
+    },
+    {
+      "name": "자주 쓰는 앱",
+      "type": "group",
+      "children": [
+        {
+          "name": "메모장",
+          "type": "shortcut",
+          "target": "notepad.exe"
+        },
+        {
+          "name": "계산기",
+          "type": "shortcut",
+          "target": "calc.exe"
+        }
+      ]
+    },
+    {
+      "name": "네이버",
+      "type": "shortcut",
+      "target": "https://www.naver.com"
+    }
+  ]
+}

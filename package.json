@@ -1,0 +1,75 @@
+{
+  "name": "papa-launcher",
+  "version": "1.0.0",
+  "description": "Desktop launcher for Windows built with Electron + React",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:electron": "wait-on tcp:5173 && npm run build:electron && set \"ELECTRON_RUN_AS_NODE=\" && set \"VITE_DEV_SERVER_URL=http://127.0.0.1:5173\" && node_modules\\electron\\dist\\electron.exe dist-electron\\electron\\main.js",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "preview": "vite preview",
+    "run:unpacked": "set \"ELECTRON_RUN_AS_NODE=\" && (if exist \"dist\\\\win-unpacked\\\\Papa Launcher.exe\" (\"dist\\\\win-unpacked\\\\Papa Launcher.exe\") else (\"dist\\\\win-unpacked\\\\electron.exe\"))",
+    "test": "vitest run",
+    "dist": "npm run build && electron-builder --win nsis",
+    "dist:temp": "npm run build && electron-builder --win nsis --config.directories.output=%TEMP%\\\\papa-launcher-dist"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.5",
+    "wait-on": "^8.0.2"
+  },
+  "build": {
+    "appId": "com.papa.launcher",
+    "productName": "Papa Launcher",
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "config",
+        "to": "config"
+      },
+      {
+        "from": "assets",
+        "to": "assets"
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Papa Launcher"
+    }
+  }
+}

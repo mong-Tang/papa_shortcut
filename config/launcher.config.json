@@ -1,0 +1,100 @@
+{
+  "version": 2,
+  "app": {
+    "title": "Papa Launcher",
+    "fullscreen": false,
+    "mode": "widget",
+    "widget": {
+      "width": 460,
+      "height": 760,
+      "anchor": "bottom-right",
+      "offsetX": -6,
+      "offsetY": 0,
+      "alwaysOnTop": true,
+      "skipTaskbar": false,
+      "resizable": true,
+      "frame": false,
+      "hideOnBlur": false,
+      "hideTrigger": "outside-click",
+      "blurBehavior": "windows-docking",
+      "edgeVisiblePx": 4,
+      "toggleShortcut": "Control+Shift+Space"
+    },
+    "theme": "blue"
+  },
+  "categories": [
+    {
+      "id": "all",
+      "label": "전체"
+    },
+    {
+      "id": "game",
+      "label": "게임"
+    },
+    {
+      "id": "tool",
+      "label": "도구"
+    },
+    {
+      "id": "web",
+      "label": "웹"
+    }
+  ],
+  "items": [
+    {
+      "id": "notepad",
+      "name": "메모장",
+      "categoryId": "tool",
+      "target": "C:/Windows/System32/notepad.exe",
+      "icon": "assets/icons/notepad.svg",
+      "keywords": [
+        "메모",
+        "텍스트"
+      ]
+    },
+    {
+      "id": "calc",
+      "name": "계산기",
+      "categoryId": "tool",
+      "target": "C:/Windows/System32/calc.exe",
+      "icon": "assets/icons/calculator.svg",
+      "keywords": [
+        "수학",
+        "숫자"
+      ]
+    },
+    {
+      "id": "explorer",
+      "name": "문서",
+      "categoryId": "tool",
+      "target": "C:/Users/mongTang/Documents",
+      "icon": "assets/icons/folder.svg",
+      "keywords": [
+        "폴더",
+        "파일"
+      ]
+    },
+    {
+      "id": "naver",
+      "name": "네이버",
+      "categoryId": "web",
+      "target": "https://www.naver.com",
+      "icon": "assets/icons/web.svg",
+      "keywords": [
+        "검색",
+        "포털"
+      ]
+    },
+    {
+      "id": "steam",
+      "name": "스팀",
+      "categoryId": "game",
+      "target": "C:/Program Files (x86)/Steam/Steam.exe",
+      "icon": "assets/icons/game.svg",
+      "keywords": [
+        "스팀",
+        "게임"
+      ]
+    }
+  ]
+}
