@@ -22,6 +22,7 @@ const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const EXECUTABLE_EXTENSIONS = new Set([".exe", ".bat", ".cmd", ".com"]);
 const SMOKE_LAUNCH_ARG_PREFIX = "--smoke-launch-item=";
 const SMOKE_ENTER_ARG_PREFIX = "--smoke-enter-item=";
+const LOCAL_STORAGE_ROOT_DIR = "papa-launcher";
 
 let mainWindow: BrowserWindow | null = null;
 let cachedConfigRaw: LauncherConfig | null = null;
@@ -39,6 +40,41 @@ let widgetOutsideClickWatcher: WindowsOutsideClickWatcher | null = null;
 let widgetToggleShortcut: string | null = null;
 let smokeEnterExpectedItemId: string | null = null;
 let smokeEnterLaunchMatched = false;
+
+function configureRuntimePaths(): void {
+  const localAppDataPath = process.env.LOCALAPPDATA?.trim();
+  if (!localAppDataPath) {
+    return;
+  }
+
+  const storageRootPath = path.join(localAppDataPath, LOCAL_STORAGE_ROOT_DIR);
+  const userDataPath = path.join(storageRootPath, "user-data");
+  const sessionDataPath = path.join(storageRootPath, "session-data");
+
+  try {
+    fs.mkdirSync(userDataPath, { recursive: true });
+    fs.mkdirSync(sessionDataPath, { recursive: true });
+    app.setPath("userData", userDataPath);
+    app.setPath("sessionData", sessionDataPath);
+  } catch (error) {
+    console.error(
+      `[papa-launcher] Failed to configure runtime paths: ${formatUnknownError(error)}`,
+    );
+  }
+}
+
+configureRuntimePaths();
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    appendLog("Second instance detected. Focus existing window.");
+    focusMainWindowForSecondInstance();
+  });
+}
 
 function getCliOptionValue(prefix: string): string | null {
   const option = process.argv.find((value) => value.startsWith(prefix));
@@ -1096,6 +1132,28 @@ function createMainWindow(): void {
   }
 }
 
+function focusMainWindowForSecondInstance(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+
+  if (widgetDocked) {
+    restoreDockedWidget(true);
+    return;
+  }
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+
+  mainWindow.focus();
+  mainWindow.webContents.focus();
+}
+
 function toggleWidgetWindow(): void {
   if (!mainWindow) {
     return;
@@ -1209,6 +1267,10 @@ ipcMain.handle(
 );
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) {
+    return;
+  }
+
   appendLog("Application started.");
   const smokeLaunchItemId = getCliOptionValue(SMOKE_LAUNCH_ARG_PREFIX);
   if (smokeLaunchItemId) {
