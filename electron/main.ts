@@ -1,4 +1,5 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, screen, shell } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, shell } from "electron";
+import type { OpenDialogOptions } from "electron";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -860,7 +861,7 @@ function startWidgetFocusWatch(): void {
     return;
   }
 
-  if (widgetHideTrigger !== "blur" || !widgetDockOnTrigger) {
+  if (!widgetDockOnTrigger) {
     return;
   }
 
@@ -869,7 +870,7 @@ function startWidgetFocusWatch(): void {
       return;
     }
 
-    if (!widgetDockOnTrigger || widgetDocked || widgetHideTrigger !== "blur") {
+    if (!widgetDockOnTrigger || widgetDocked) {
       return;
     }
 
@@ -1087,7 +1088,9 @@ function createMainWindow(): void {
     }
     appendLog("Widget blur event received.");
 
-    if (widgetHideTrigger !== "blur") {
+    // blurBehavior=windows-docking (or dock-right-edge) should dock on blur
+    // even when hideTrigger is outside-click.
+    if (widgetHideTrigger !== "blur" && !widgetDockOnTrigger) {
       return;
     }
 
@@ -1209,6 +1212,35 @@ ipcMain.handle("launcher:getConfig", async (): Promise<ApiResult<LauncherConfig>
 
 ipcMain.handle("launcher:reloadConfig", async (): Promise<ReloadResult> => {
   return loadConfig();
+});
+
+ipcMain.handle("launcher:pickLaunchTarget", async (): Promise<string | null> => {
+  try {
+    const ownerWindow = BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined;
+    const options: OpenDialogOptions = {
+      title: "Select program to add",
+      properties: ["openFile"],
+      filters: [
+        { name: "Executable Files", extensions: ["exe", "bat", "cmd", "com", "lnk"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    };
+    const result = ownerWindow
+      ? await dialog.showOpenDialog(ownerWindow, options)
+      : await dialog.showOpenDialog(options);
+
+    if (result.canceled || result.filePaths.length === 0) {
+      appendLog("Pick launch target canceled.");
+      return null;
+    }
+
+    const selectedPath = normalizePathToPosix(result.filePaths[0]);
+    appendLog(`Pick launch target selected path=${selectedPath}`);
+    return selectedPath;
+  } catch (error) {
+    appendLog(`Pick launch target failed: ${formatUnknownError(error)}`);
+    return null;
+  }
 });
 
 ipcMain.handle(

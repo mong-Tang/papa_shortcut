@@ -51,6 +51,26 @@ function keywordsToString(keywords: string[] | undefined): string {
   return keywords?.join(", ") ?? "";
 }
 
+function inferItemNameFromTarget(target: string): string {
+  const normalizedTarget = target.replace(/\\/g, "/");
+  const fileName = normalizedTarget.split("/").filter(Boolean).pop() ?? "";
+  if (!fileName) {
+    return "New Item";
+  }
+
+  const nameWithoutExtension = fileName.replace(/\.[^.]+$/, "");
+  return nameWithoutExtension || fileName;
+}
+
+function inferWorkingDirFromTarget(target: string): string | undefined {
+  const normalizedTarget = target.replace(/\\/g, "/");
+  const lastSeparatorIndex = normalizedTarget.lastIndexOf("/");
+  if (lastSeparatorIndex <= 0) {
+    return undefined;
+  }
+  return normalizedTarget.slice(0, lastSeparatorIndex);
+}
+
 function cloneItems(items: LauncherItem[]): LauncherItem[] {
   return items.map((item) => ({
     ...item,
@@ -239,15 +259,24 @@ export default function App(): JSX.Element {
     setEditingItemId(null);
   }
 
-  function createEditorItem(): void {
+  async function createEditorItem(): Promise<void> {
+    const selectedTarget = await window.launcherApi.pickLaunchTarget();
+    if (!selectedTarget) {
+      return;
+    }
+
     const defaultCategory = editableCategories[0]?.id ?? "all";
     const itemId = `item-${Date.now()}`;
+    const normalizedTarget = selectedTarget.trim();
+    const inferredName = inferItemNameFromTarget(normalizedTarget);
+    const inferredWorkingDir = inferWorkingDirFromTarget(normalizedTarget);
 
     const newItem: LauncherItem = {
       id: itemId,
-      name: "New Item",
+      name: inferredName,
       categoryId: defaultCategory,
-      target: "",
+      target: normalizedTarget,
+      workingDir: inferredWorkingDir,
     };
 
     setEditorItems((current) => [...current, newItem]);
@@ -272,6 +301,19 @@ export default function App(): JSX.Element {
       setEditingItemId(nextItems[0]?.id ?? null);
       return nextItems;
     });
+  }
+
+  function onDeleteEditingItem(): void {
+    if (!editingItem) {
+      return;
+    }
+
+    const shouldDelete = window.confirm(`Delete '${editingItem.name}' item?`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    deleteEditingItem();
   }
 
   async function saveEditorItems(): Promise<void> {
@@ -589,9 +631,19 @@ export default function App(): JSX.Element {
 
             <div className="editor-body">
               <aside className="editor-list">
-                <button type="button" onClick={createEditorItem}>
-                  Add Item
-                </button>
+                <div className="editor-list-actions">
+                  <button type="button" onClick={() => void createEditorItem()}>
+                    Add Item
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={onDeleteEditingItem}
+                    disabled={!editingItem}
+                  >
+                    Delete Item
+                  </button>
+                </div>
                 <div className="editor-list-items">
                   {editorItems.map((item) => (
                     <button
@@ -685,9 +737,6 @@ export default function App(): JSX.Element {
                         }
                       />
                     </label>
-                    <button type="button" className="danger" onClick={deleteEditingItem}>
-                      Delete Item
-                    </button>
                   </>
                 )}
               </section>

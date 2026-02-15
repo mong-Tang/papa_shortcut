@@ -14,6 +14,9 @@ const launcherApi = {
   reloadConfig: (): Promise<ReloadResult> => {
     return ipcRenderer.invoke("launcher:reloadConfig");
   },
+  pickLaunchTarget: (): Promise<string | null> => {
+    return ipcRenderer.invoke("launcher:pickLaunchTarget");
+  },
   launchItem: (itemId: string): Promise<LaunchResult> => {
     return ipcRenderer.invoke("launcher:launchItem", itemId);
   },
