@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApiResult, LauncherCategory, LauncherConfig, LauncherItem } from "@shared/types";
 
 interface ErrorModal {
@@ -11,6 +11,12 @@ interface CategoryChip {
   id: string;
   label: string;
   kind: "main" | "all";
+}
+
+interface NewItemDraft {
+  target: string;
+  name: string;
+  workingDir?: string;
 }
 
 type CoreCategoryId = "document" | "game" | "web" | "tool";
@@ -288,7 +294,6 @@ export default function App(): JSX.Element {
   const [editorCategoryId, setEditorCategoryId] = useState<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
-  const [addTargetTypeModalOpen, setAddTargetTypeModalOpen] = useState(false);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameSaving, setRenameSaving] = useState(false);
   const [renameDraftLabels, setRenameDraftLabels] = useState<Record<CoreCategoryId, string>>({
@@ -329,6 +334,10 @@ export default function App(): JSX.Element {
   const shouldDisableRenameButton = useMemo(
     () => hasPickedEditorCategory || editorSelectedCategory !== null,
     [hasPickedEditorCategory, editorSelectedCategory],
+  );
+  const primaryAddButtonLabel = useMemo(
+    () => (editorCategoryId ? "Add Item" : "移댄뀒怨좊━ 異붽?"),
+    [editorCategoryId],
   );
   const emptyStateImageSrc = useMemo(
     () => getIconSrc(config?.app.emptyStateImage),
@@ -579,67 +588,130 @@ export default function App(): JSX.Element {
     setEditorOriginalItems([]);
     setEditorCategoryId(null);
     setEditingItemId(null);
-    setAddTargetTypeModalOpen(false);
     setRenameModalOpen(false);
   }
 
-  function openAddTargetTypeModal(): void {
+  function onClickPrimaryAddButton(): void {
+    if (!editorCategoryId) {
+      void addCategoryFromFolder();
+      return;
+    }
+
+    void createEditorItem();
+  }
+
+  function toCategoryIdCandidate(label: string): string {
+    return label.trim().toLowerCase().replace(/\s+/g, "-");
+  }
+
+  function toUniqueCategoryId(baseLabel: string, categories: LauncherCategory[]): string {
+    const normalizedBase = toCategoryIdCandidate(baseLabel) || `category-${Date.now()}`;
+    let candidate = normalizedBase;
+    let suffix = 2;
+    const usedIds = new Set(categories.map((category) => category.id));
+
+    while (candidate === "all" || usedIds.has(candidate)) {
+      candidate = `${normalizedBase}-${suffix}`;
+      suffix += 1;
+    }
+
+    return candidate;
+  }
+
+  async function addCategoryFromFolder(): Promise<void> {
     if (!config) {
       return;
     }
 
-    if (editorCategoryOptions.length === 0) {
+    const selectedFolder = await window.launcherApi.pickLaunchTarget("folder");
+    if (!selectedFolder) {
+      return;
+    }
+
+    const normalizedPath = selectedFolder.replace(/\\/g, "/");
+    const folderName = normalizedPath.split("/").filter(Boolean).pop() ?? "";
+    const categoryLabel = folderName.trim() || "New Category";
+    const categoryId = toUniqueCategoryId(categoryLabel, config.categories);
+
+    setEditorSaving(true);
+    const result = await window.launcherApi.saveConfig({
+      ...config,
+      categories: [...config.categories, { id: categoryId, label: categoryLabel }],
+    });
+    setEditorSaving(false);
+
+    if (!result.ok) {
       setErrorModal({
-        title: "Add Item Failed",
-        message: "No valid category is available. Add categories first.",
+        title: "Add Category Failed",
+        message: result.error.message,
+        details: result.error.details,
       });
       return;
     }
 
-    if (!editorCategoryId) {
-      setErrorModal({
-        title: "Add Item Failed",
-        message: "Select a category first.",
-      });
-      return;
-    }
-
-    setAddTargetTypeModalOpen(true);
+    setConfig(result.data);
+    syncEditorCategoryItems(result.data, categoryId);
+    setStatusText(`Added category '${categoryLabel}'.`);
   }
 
-  function closeAddTargetTypeModal(): void {
-    if (editorSaving) {
-      return;
-    }
-    setAddTargetTypeModalOpen(false);
-  }
-
-  async function createEditorItem(targetType: "file" | "folder"): Promise<void> {
+  async function createEditorItem(): Promise<void> {
     if (!config || !editorCategoryId) {
       return;
     }
 
-    setAddTargetTypeModalOpen(false);
-    const selectedTarget = await window.launcherApi.pickLaunchTarget(targetType);
+    const selectedTarget = await window.launcherApi.pickLaunchTarget("file");
     if (!selectedTarget) {
       return;
     }
 
-    const itemId = `item-${Date.now()}`;
     const normalizedTarget = selectedTarget.trim();
-    const inferredName = inferItemNameFromTarget(normalizedTarget);
-    const inferredWorkingDir = inferWorkingDirFromTarget(normalizedTarget);
+    const draft: NewItemDraft = {
+      target: normalizedTarget,
+      name: inferItemNameFromTarget(normalizedTarget),
+      workingDir: inferWorkingDirFromTarget(normalizedTarget),
+    };
+    await saveNewItemToCategory(editorCategoryId, draft);
+  }
 
+  async function saveNewItemToCategory(
+    categoryId: string,
+    draft: NewItemDraft,
+  ): Promise<void> {
+    if (!config) {
+      return;
+    }
+
+    if (categoryId === "all") {
+      setErrorModal({
+        title: "Add Item Failed",
+        message: "Category 'all' is filter-only.",
+      });
+      return;
+    }
+
+    const hasCategory = editorCategoryOptions.some((category) => category.id === categoryId);
+    if (!hasCategory) {
+      setErrorModal({
+        title: "Add Item Failed",
+        message: `Unknown category '${categoryId}'.`,
+      });
+      return;
+    }
+
+    const itemId = `item-${Date.now()}`;
     const newItem: LauncherItem = {
       id: itemId,
-      name: inferredName,
-      categoryId: editorCategoryId,
-      target: normalizedTarget,
-      workingDir: inferredWorkingDir,
+      name: draft.name,
+      categoryId,
+      target: draft.target,
+      workingDir: draft.workingDir,
     };
 
-    const nextScopedItems = [...cloneItems(editorItems), newItem];
-    const mergedItems = mergeItemsByCategory(config.items, editorCategoryId, nextScopedItems);
+    const nextScopedItems = [
+      ...cloneItems(config.items.filter((item) => item.categoryId === categoryId)),
+      newItem,
+    ];
+    const mergedItems = mergeItemsByCategory(config.items, categoryId, nextScopedItems);
 
     const validationError = validateItems(mergedItems, editableCategories);
     if (validationError) {
@@ -667,7 +739,7 @@ export default function App(): JSX.Element {
     }
 
     setConfig(result.data);
-    syncEditorCategoryItems(result.data, editorCategoryId, newItem.id);
+    syncEditorCategoryItems(result.data, categoryId, newItem.id);
     setStatusText(`Added '${newItem.name}'.`);
   }
 
@@ -948,14 +1020,6 @@ export default function App(): JSX.Element {
           return;
         }
 
-        if (addTargetTypeModalOpen) {
-          if (event.key === "Escape") {
-            closeAddTargetTypeModal();
-            event.preventDefault();
-          }
-          return;
-        }
-
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
           event.preventDefault();
           void saveEditorItems();
@@ -1010,7 +1074,6 @@ export default function App(): JSX.Element {
     filteredItems,
     selectedItem,
     editorOpen,
-    addTargetTypeModalOpen,
     renameModalOpen,
     errorModal,
     emptyStateMenuPosition,
@@ -1103,10 +1166,10 @@ export default function App(): JSX.Element {
               {emptyStateImageSrc ? (
                 <img src={emptyStateImageSrc} alt="Empty state" />
               ) : (
-                <div className="empty-state-placeholder">배경 그림이 없습니다.</div>
+                <div className="empty-state-placeholder">諛곌꼍 洹몃┝???놁뒿?덈떎.</div>
               )}
               <div className="empty-state-caption">
-                카테고리를 선택하세요. 우클릭으로 배경 그림을 변경할 수 있습니다.
+                移댄뀒怨좊━瑜??좏깮?섏꽭?? ?고겢由?쑝濡?諛곌꼍 洹몃┝??蹂寃쏀븷 ???덉뒿?덈떎.
               </div>
             </div>
           ) : (
@@ -1183,7 +1246,7 @@ export default function App(): JSX.Element {
             onClick={(event) => event.stopPropagation()}
           >
             <button type="button" onClick={() => void pickEmptyStateImage()} disabled={emptyStateImageSaving}>
-              {emptyStateImageSaving ? "저장 중..." : "배경 그림 선택..."}
+              {emptyStateImageSaving ? "???以?.." : "諛곌꼍 洹몃┝ ?좏깮..."}
             </button>
           </div>
         </div>
@@ -1221,19 +1284,20 @@ export default function App(): JSX.Element {
                     onClick={openRenameModal}
                     disabled={
                       editorSaving ||
-                      addTargetTypeModalOpen ||
                       renameSaving ||
                       shouldDisableRenameButton
                     }
                   >
-                    버튼 리네임
-                  </button>
+                    踰꾪듉 由щ꽕??                  </button>
                   <button
                     type="button"
-                    onClick={openAddTargetTypeModal}
-                    disabled={editorSaving || addTargetTypeModalOpen || renameSaving || !editorCategoryId}
+                    onClick={onClickPrimaryAddButton}
+                    disabled={
+                      editorSaving ||
+                      renameSaving
+                    }
                   >
-                    Add Item
+                    {primaryAddButtonLabel}
                   </button>
                   <button
                     type="button"
@@ -1242,7 +1306,6 @@ export default function App(): JSX.Element {
                     disabled={
                       !editingItem ||
                       editorSaving ||
-                      addTargetTypeModalOpen ||
                       renameSaving ||
                       !editorCategoryId
                     }
@@ -1351,14 +1414,17 @@ export default function App(): JSX.Element {
               <button
                 type="button"
                 onClick={() => closeEditor()}
-                disabled={editorSaving || addTargetTypeModalOpen}
+                disabled={editorSaving}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => void saveEditorItems()}
-                disabled={editorSaving || addTargetTypeModalOpen || !editorCategoryId}
+                disabled={
+                  editorSaving ||
+                  !editorCategoryId
+                }
               >
                 {editorSaving ? "Saving..." : "Save"}
               </button>
@@ -1367,29 +1433,6 @@ export default function App(): JSX.Element {
         </div>
       )}
 
-      {addTargetTypeModalOpen && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="modal add-target-modal" role="dialog" aria-modal="true">
-            <header>
-              <h2>추가 대상 선택</h2>
-            </header>
-            <p>파일 또는 폴더 중에서 추가할 대상을 선택하세요.</p>
-            <div className="classify-actions">
-              <button type="button" onClick={() => void createEditorItem("file")} disabled={editorSaving}>
-                파일
-              </button>
-              <button type="button" onClick={() => void createEditorItem("folder")} disabled={editorSaving}>
-                폴더
-              </button>
-            </div>
-            <footer className="editor-footer">
-              <button type="button" onClick={closeAddTargetTypeModal} disabled={editorSaving}>
-                취소
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
 
       {renameModalOpen && (
         <div className="modal-backdrop" role="presentation">

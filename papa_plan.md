@@ -1,151 +1,69 @@
-﻿# Papa Launcher 폴더 등록 + 버튼 분류 + 초기 빈화면 UX 개선 계획
+﻿# Papa Launcher 현재 상태 정리 (2026-02-16)
 
-## 요약
-목표:
-1. Add Item에서 파일+폴더 모두 등록
-2. 등록 직후 버튼(칩)으로 분류
-3. 첫 화면은 카테고리 미선택 + 배경 그림 표시, 우클릭으로 그림 변경
-4. 상단 Exit 버튼으로 앱 즉시 종료
-
-카테고리 UX:
-- 기본 4개: 문서/게임/웹/도구
-- 상단 필터에 `all`을 포함해 동일 크기 버튼으로 표시(필터 전용)
+## 1) 목적
+현재 구현 상태를 코드 기준으로 정리하고,
+다음 작업 시 혼동되지 않도록 동작 규칙을 명확히 기록한다.
 
 ---
 
-## 구현 범위
+## 2) 현재 확정 동작
 
-### 1) Add Item에서 파일+폴더 선택 지원
-- `launcher:pickLaunchTarget`를 `openFile + openDirectory`로 확장
-- 실행파일/바로가기/폴더 모두 선택 가능
+### A. 메인 화면 카테고리
+- 상단 카테고리 버튼은 고정 5개로 운영
+  - `문서(document)` / `게임(game)` / `웹(web)` / `도구(tool)` / `all`
+- 첫 진입 상태는 카테고리 미선택(`null`)이며 빈화면이 표시됨
 
-영향 파일:
-- `electron/main.ts`
-- `electron/preload.ts`
-- `src/renderer/vite-env.d.ts`
+### B. 빈화면 UX
+- 빈화면 우클릭으로 배경 이미지 선택 가능
+- 선택한 이미지는 `app.emptyStateImage`로 저장
 
----
+### C. Edit > Add 버튼 동작 (최신)
+- 드롭다운이 `Select category...`(미선택) 상태일 때
+  - 버튼 텍스트: `카테고리 추가`
+  - 동작: **폴더 선택 다이얼로그** 오픈
+  - 선택한 폴더명으로 카테고리 생성 후 즉시 저장
+  - 카테고리 id는 slug 규칙으로 생성, 중복 시 `-2`, `-3` suffix 자동 부여
+- 드롭다운에서 카테고리가 선택된 상태일 때
+  - 버튼 텍스트: `Add Item`
+  - 동작: **파일 선택 다이얼로그** 오픈
+  - 파일 선택 후 해당 카테고리에 아이템 즉시 저장
 
-### 2) Add Item 직후 버튼 분류 단계 추가
-흐름:
-1. Add Item 클릭
-2. 파일/폴더 선택
-3. 분류 버튼 모달 표시(문서/게임/웹/도구)
-4. 카테고리 선택 즉시 아이템 생성 + 저장
+### D. Edit > 버튼 리네임
+- `Select category...` 상태에서만 활성화
+- 카테고리 선택 시 비활성화
 
-규칙:
-- `all`은 분류 버튼에 포함하지 않음
-- 추가+분류까지만 자동 저장
-- 수정/삭제는 기존 Save 버튼 방식 유지
-
-영향 파일:
-- `src/renderer/App.tsx`
-- `src/renderer/styles.css`
-
----
-
-### 3) 카테고리 버튼 UX
-- 상단 필터: 문서/게임/웹/도구 + `all`(동일 크기 버튼)
-- 첫 진입: 카테고리 미선택(null), 리스트 대신 빈화면 그림
-
-필터 규칙:
-- `selectedCategoryId === null` -> 빈화면
-- `selectedCategoryId === __all__` -> 전체
-- 그 외 -> 해당 카테고리
-
-영향 파일:
-- `src/renderer/App.tsx`
-- `src/renderer/styles.css`
+### E. 종료
+- 상단 `Exit` 버튼으로 앱 종료 IPC 호출
 
 ---
 
-### 4) 첫 화면 우클릭 그림 변경
-- 빈화면 우클릭 메뉴: `배경 그림 선택...`
-- 이미지 선택 후 config에 즉시 저장
-- 저장 필드: `app.emptyStateImage`
-
-영향 파일:
-- `electron/main.ts` (이미지 선택 IPC 추가)
-- `electron/preload.ts`
-- `src/renderer/vite-env.d.ts`
-- `src/renderer/App.tsx`
-- `src/shared/types.ts`
-- `src/shared/config-schema.ts`
+## 3) 코드 정리 사항 (이번 반영)
+- Add 흐름을 단순화:
+  - 기존의 중간 모달(대상 선택/분류 선택) 의존 로직 제거
+  - 현재 요구사항 기준(카테고리 미선택=폴더, 선택됨=파일)으로 단일 흐름 정리
+- 불필요한 상태/분기 제거로 `App.tsx` 복잡도 축소
 
 ---
 
-### 5) 상단 Exit 버튼 동작 명시
-- 헤더 우측 `Exit` 버튼 클릭 시 앱 종료
-- renderer -> preload -> main IPC 경유로 `app.quit()` 호출
+## 4) 검증 기준
 
-영향 파일:
-- `src/renderer/App.tsx`
-- `electron/preload.ts`
-- `src/renderer/vite-env.d.ts`
-- `electron/main.ts`
+### 수동 검증
+1. `Edit` 진입 후 드롭다운이 `Select category...`인지 확인
+2. 버튼 텍스트가 `카테고리 추가`인지 확인
+3. 버튼 클릭 시 폴더 선택창이 뜨고, 선택 후 카테고리 추가되는지 확인
+4. 드롭다운에서 임의 카테고리 선택
+5. 버튼 텍스트가 `Add Item`으로 바뀌는지 확인
+6. 버튼 클릭 시 파일 선택창이 뜨고, 선택 후 아이템이 즉시 추가되는지 확인
+7. 앱 재실행 후 카테고리/아이템 유지 확인
 
----
-
-## API/타입 변경
-
-### preload API
-- 추가: `pickEmptyStateImage(): Promise<string | null>`
-- 변경: `pickLaunchTarget()`는 파일+폴더 반환 가능(시그니처 유지)
-
-### config 타입/스키마
-- `LauncherAppConfig.emptyStateImage?: string` 추가
-- Zod 스키마에 동일 optional 필드 추가
+### 빌드 검증
+```powershell
+npm.cmd run build
+```
 
 ---
 
-## 데이터 흐름
-
-### A) Add Item 즉시 저장
-1. 기존 editor 상태 스냅샷
-2. picker 결과로 draft item 생성
-3. 분류 버튼 선택으로 `categoryId` 확정
-4. `saveConfig(...)` 호출
-5. 성공: config/editor 상태 동기화
-6. 실패: 롤백 + 오류 모달
-
-### B) 빈화면 그림 저장
-1. 빈화면 우클릭 메뉴 선택
-2. 이미지 picker
-3. `saveConfig({ app.emptyStateImage })`
-4. 성공 시 즉시 반영, 실패 시 오류 모달
-
----
-
-## 예외/실패 처리
-- picker 취소: 변경 없음
-- 저장 실패: 롤백 + 오류 표시
-- 카테고리 비정상(0개): 분류 차단 + 안내
-- `all`은 상단 카테고리 행 마지막에 일반 버튼으로 배치
-- `all`은 아이템 저장 categoryId로 사용 금지
-
----
-
-## 테스트
-
-### 자동 테스트
-- `config-schema.test.ts`에 `app.emptyStateImage` 허용 케이스 추가
-- 기존 회귀 테스트 유지
-
-### 수동 테스트
-1. Add Item에서 폴더 선택 가능
-2. 선택 직후 분류 버튼 모달 노출
-3. 분류 선택 즉시 저장/재시작 유지
-4. 상단 버튼 구조(4개 + `all` 동일 크기 버튼) 확인
-5. 첫 화면 미선택 + 그림 노출
-6. 우클릭 그림 변경 동작
-7. 저장 실패 시 롤백/오류 확인
-8. `Exit` 버튼 클릭 시 앱 종료 확인
-
----
-
-## 가정/기본값
-1. 기본 순서: 문서 -> 게임 -> 웹 -> 도구
-2. `all`은 필터 전용이며 UI는 일반 크기 카테고리 버튼
-3. 첫 화면은 카테고리 미선택 상태
-4. 배경 그림은 우클릭으로 변경, config 즉시 저장
-5. 자동 저장은 추가+분류까지만 적용
+## 5) 남은 개선 후보 (선택)
+- 드롭다운 기반 추가 카테고리 전용 UI(검색/정렬) 보강
+- 카테고리 id 생성 규칙 커스터마이즈(한글/특수문자 정책)
+- 깨진 한글 문자열(인코딩) 일괄 정리
