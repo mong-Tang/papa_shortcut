@@ -336,7 +336,7 @@ export default function App(): JSX.Element {
     [hasPickedEditorCategory, editorSelectedCategory],
   );
   const primaryAddButtonLabel = useMemo(
-    () => (editorCategoryId ? "Add Item" : "移댄뀒怨좊━ 異붽?"),
+    () => (editorCategoryId ? "Add Item" : "\uCE74\uD14C\uACE0\uB9AC \uCD94\uAC00"),
     [editorCategoryId],
   );
   const emptyStateImageSrc = useMemo(
@@ -1288,7 +1288,8 @@ export default function App(): JSX.Element {
                       shouldDisableRenameButton
                     }
                   >
-                    踰꾪듉 由щ꽕??                  </button>
+                    버튼 리네임
+                  </button>
                   <button
                     type="button"
                     onClick={onClickPrimaryAddButton}
