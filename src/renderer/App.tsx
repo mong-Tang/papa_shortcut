@@ -322,6 +322,14 @@ export default function App(): JSX.Element {
     () => editorCategoryOptions.find((category) => category.id === editorCategoryId) ?? null,
     [editorCategoryId, editorCategoryOptions],
   );
+  const hasPickedEditorCategory = useMemo(
+    () => typeof editorCategoryId === "string" && editorCategoryId.trim().length > 0,
+    [editorCategoryId],
+  );
+  const shouldDisableRenameButton = useMemo(
+    () => hasPickedEditorCategory || editorSelectedCategory !== null,
+    [hasPickedEditorCategory, editorSelectedCategory],
+  );
   const emptyStateImageSrc = useMemo(
     () => getIconSrc(config?.app.emptyStateImage),
     [config?.app.emptyStateImage],
@@ -469,7 +477,7 @@ export default function App(): JSX.Element {
   }
 
   function openRenameModal(): void {
-    if (!config || editorSaving) {
+    if (!config || editorSaving || shouldDisableRenameButton) {
       return;
     }
 
@@ -1211,7 +1219,12 @@ export default function App(): JSX.Element {
                   <button
                     type="button"
                     onClick={openRenameModal}
-                    disabled={editorSaving || addTargetTypeModalOpen || renameSaving}
+                    disabled={
+                      editorSaving ||
+                      addTargetTypeModalOpen ||
+                      renameSaving ||
+                      shouldDisableRenameButton
+                    }
                   >
                     버튼 리네임
                   </button>
