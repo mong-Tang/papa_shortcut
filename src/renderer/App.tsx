@@ -305,6 +305,7 @@ export default function App(): JSX.Element {
   const [emptyStateImageSaving, setEmptyStateImageSaving] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const itemListRef = useRef<HTMLElement>(null);
 
   const categoryChips = useMemo<CategoryChip[]>(() => {
     const labelByCoreId = getCoreCategoryLabels(config?.categories ?? []);
@@ -318,6 +319,15 @@ export default function App(): JSX.Element {
       ALL_CATEGORY_CHIP.label;
     return [...mainCategoryChips, { ...ALL_CATEGORY_CHIP, label: allCategoryLabel }];
   }, [config?.categories]);
+  const extraCategories = useMemo(
+    () =>
+      (config?.categories ?? []).filter(
+        (category) =>
+          category.id !== "all" &&
+          !CORE_CATEGORY_ORDER.includes(category.id as CoreCategoryId),
+      ),
+    [config?.categories],
+  );
 
   const editableCategories = useMemo(() => config?.categories ?? [], [config]);
   const editorCategoryOptions = useMemo(() => {
@@ -931,14 +941,24 @@ export default function App(): JSX.Element {
   }, [search, selectedCategoryId]);
 
   useEffect(() => {
+    if (!itemListRef.current) {
+      return;
+    }
+    itemListRef.current.scrollTop = 0;
+  }, [search, selectedCategoryId]);
+
+  useEffect(() => {
     if (!config) {
       return;
     }
-    const validCategoryIds = new Set(categoryChips.map((category) => category.id));
+    const validCategoryIds = new Set([
+      ...categoryChips.map((category) => category.id),
+      ...extraCategories.map((category) => category.id),
+    ]);
     if (selectedCategoryId !== null && !validCategoryIds.has(selectedCategoryId)) {
       setSelectedCategoryId(null);
     }
-  }, [categoryChips, config, selectedCategoryId]);
+  }, [categoryChips, config, extraCategories, selectedCategoryId]);
 
   useEffect(() => {
     if (selectedCategoryId !== null) {
@@ -1151,8 +1171,32 @@ export default function App(): JSX.Element {
             );
           })}
         </nav>
+        {extraCategories.length > 0 && (
+          <div className="extra-category-row">
+            <select
+              aria-label="Extra category"
+              value={
+                selectedCategoryId &&
+                extraCategories.some((category) => category.id === selectedCategoryId)
+                  ? selectedCategoryId
+                  : ""
+              }
+              onChange={(event) => {
+                const nextCategoryId = event.target.value.trim();
+                setSelectedCategoryId(nextCategoryId.length > 0 ? nextCategoryId : null);
+              }}
+            >
+              <option value="">추가 카테고리 선택...</option>
+              {extraCategories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
-        <section className="item-list" role="listbox" aria-label="Launcher items">
+        <section ref={itemListRef} className="item-list" role="listbox" aria-label="Launcher items">
           {isIdleEmptyState ? (
             <div
               className="empty-state"
@@ -1166,10 +1210,10 @@ export default function App(): JSX.Element {
               {emptyStateImageSrc ? (
                 <img src={emptyStateImageSrc} alt="Empty state" />
               ) : (
-                <div className="empty-state-placeholder">諛곌꼍 洹몃┝???놁뒿?덈떎.</div>
+                <div className="empty-state-placeholder">배경 그림이 없습니다.</div>
               )}
               <div className="empty-state-caption">
-                移댄뀒怨좊━瑜??좏깮?섏꽭?? ?고겢由?쑝濡?諛곌꼍 洹몃┝??蹂寃쏀븷 ???덉뒿?덈떎.
+                카테고리를 선택하세요. 우클릭으로 배경 그림을 변경할 수 있습니다.
               </div>
             </div>
           ) : (
@@ -1246,7 +1290,7 @@ export default function App(): JSX.Element {
             onClick={(event) => event.stopPropagation()}
           >
             <button type="button" onClick={() => void pickEmptyStateImage()} disabled={emptyStateImageSaving}>
-              {emptyStateImageSaving ? "???以?.." : "諛곌꼍 洹몃┝ ?좏깮..."}
+              {emptyStateImageSaving ? "저장 중..." : "배경 그림 선택..."}
             </button>
           </div>
         </div>

@@ -76,7 +76,7 @@ button:disabled {
     rgba(7, 15, 31, 0.84);
   backdrop-filter: blur(18px);
   display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-rows: auto auto auto auto 1fr auto;
   box-shadow: 0 16px 46px rgba(0, 0, 0, 0.35);
 }
 
@@ -153,6 +153,20 @@ button:disabled {
   gap: 6px;
   padding: 0 12px 8px;
   overflow: hidden;
+}
+
+.extra-category-row {
+  padding: 0 12px 8px;
+}
+
+.extra-category-row > select {
+  width: 100%;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(10, 22, 44, 0.86);
+  border: 1px solid rgba(170, 198, 255, 0.2);
+  color: #dce9ff;
+  padding: 0 10px;
 }
 
 .category-main-row {
