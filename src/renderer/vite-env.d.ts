@@ -11,6 +11,7 @@ import type {
 interface LauncherApi {
   getConfig: () => Promise<ApiResult<LauncherConfig>>;
   reloadConfig: () => Promise<ReloadResult>;
+  consumeRecoveryNotice: () => Promise<string | null>;
   quit: () => Promise<void>;
   pickLaunchTarget: (targetType: "file" | "folder") => Promise<string | null>;
   pickEmptyStateImage: () => Promise<string | null>;

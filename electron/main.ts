@@ -26,6 +26,39 @@ const SMOKE_ENTER_ARG_PREFIX = "--smoke-enter-item=";
 const LOCAL_STORAGE_ROOT_DIR = "papa-launcher";
 const WIDGET_SIZE_PERSIST_DEBOUNCE_MS = 420;
 const MIN_WIDGET_HEIGHT_PX = 600;
+const DEFAULT_RECOVERY_CONFIG: LauncherConfig = {
+  version: 2,
+  app: {
+    title: "Papa Launcher",
+    fullscreen: false,
+    mode: "widget",
+    widget: {
+      width: 460,
+      height: 760,
+      anchor: "bottom-right",
+      offsetX: 0,
+      offsetY: 0,
+      alwaysOnTop: true,
+      skipTaskbar: false,
+      resizable: true,
+      frame: false,
+      hideOnBlur: false,
+      hideTrigger: "outside-click",
+      blurBehavior: "windows-docking",
+      edgeVisiblePx: 30,
+      toggleShortcut: "Control+Shift+Space",
+    },
+    theme: "blue",
+  },
+  categories: [
+    { id: "all", label: "전체" },
+    { id: "document", label: "문서" },
+    { id: "game", label: "게임" },
+    { id: "web", label: "웹" },
+    { id: "tool", label: "도구" },
+  ],
+  items: [],
+};
 
 let mainWindow: BrowserWindow | null = null;
 let cachedConfigRaw: LauncherConfig | null = null;
@@ -46,6 +79,7 @@ let smokeEnterLaunchMatched = false;
 let quitFallbackTimer: NodeJS.Timeout | null = null;
 let widgetSizePersistTimer: NodeJS.Timeout | null = null;
 let lastPersistedWidgetSize: { width: number; height: number } | null = null;
+let pendingRecoveryNotice: string | null = null;
 
 function configureRuntimePaths(): void {
   const localAppDataPath = process.env.LOCALAPPDATA?.trim();
@@ -350,6 +384,13 @@ function loadConfig(): ApiResult<LauncherConfig> {
   }
 
   if (!foundAnyFile) {
+    const recovered = recoverConfigFromDefault(
+      "CONFIG_NOT_FOUND",
+      `Expected one of: ${readCandidates.join(" | ")}`,
+    );
+    if (recovered.ok) {
+      return recovered;
+    }
     return configError(
       "CONFIG_NOT_FOUND",
       "Config file not found.",
@@ -357,11 +398,84 @@ function loadConfig(): ApiResult<LauncherConfig> {
     );
   }
 
+  const recovered = recoverConfigFromDefault(
+    "CONFIG_INVALID_SCHEMA",
+    attemptLogs.join(" | "),
+  );
+  if (recovered.ok) {
+    return recovered;
+  }
+
   return configError(
     "CONFIG_INVALID_SCHEMA",
     "All discovered config files are invalid.",
     attemptLogs.join(" | "),
   );
+}
+
+function writeConfigToPath(configPath: string, config: LauncherConfig): void {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const backupPath = `${configPath}.bak`;
+  const tempPath = `${configPath}.tmp`;
+  const serialized = `${JSON.stringify(config, null, 2)}\n`;
+
+  if (fs.existsSync(configPath)) {
+    fs.copyFileSync(configPath, backupPath);
+  }
+
+  fs.writeFileSync(tempPath, serialized, "utf8");
+  if (fs.existsSync(configPath)) {
+    fs.unlinkSync(configPath);
+  }
+  fs.renameSync(tempPath, configPath);
+}
+
+function recoverConfigFromDefault(
+  reason: "CONFIG_NOT_FOUND" | "CONFIG_INVALID_SCHEMA",
+  details: string,
+): ApiResult<LauncherConfig> {
+  const writablePath = getWritableConfigPath();
+  appendLog(
+    `Config auto-recovery requested reason=${reason} details=${details} target=${writablePath}`,
+  );
+
+  const parsedDefault = launcherConfigSchema.safeParse(DEFAULT_RECOVERY_CONFIG);
+  if (!parsedDefault.success) {
+    const schemaDetails = parsedDefault.error.issues
+      .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+      .join(" | ");
+    appendLog(`Config auto-recovery failed: default schema invalid: ${schemaDetails}`);
+    return configError(
+      "CONFIG_INVALID_SCHEMA",
+      "Default recovery config is invalid.",
+      schemaDetails,
+    );
+  }
+
+  try {
+    writeConfigToPath(writablePath, parsedDefault.data);
+  } catch (error) {
+    appendLog(`Config auto-recovery write failed: ${formatUnknownError(error)}`);
+    return configError(
+      "CONFIG_WRITE_FAILED",
+      "Failed to write recovered config file.",
+      formatUnknownError(error),
+    );
+  }
+
+  const reloaded = loadConfigFromPath(writablePath);
+  if (!reloaded.ok) {
+    appendLog(
+      `Config auto-recovery reload failed: ${reloaded.error.code} ${reloaded.error.details ?? reloaded.error.message}`,
+    );
+    return reloaded;
+  }
+
+  cachedConfigRaw = reloaded.data;
+  cachedConfigForRenderer = toRendererConfig(reloaded.data);
+  pendingRecoveryNotice = "설정 오류를 감지해 기본 설정으로 복구했습니다.";
+  appendLog(`Config auto-recovery success path=${writablePath}`);
+  return { ok: true, data: cachedConfigForRenderer };
 }
 
 function normalizeRendererAssetForStorage(assetPath: string | undefined): string | undefined {
@@ -426,20 +540,7 @@ function saveConfig(input: unknown): SaveConfigResult {
 
   try {
     const configPath = getWritableConfigPath();
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    const backupPath = `${configPath}.bak`;
-    const tempPath = `${configPath}.tmp`;
-    const serialized = `${JSON.stringify(schemaResult.data, null, 2)}\n`;
-
-    if (fs.existsSync(configPath)) {
-      fs.copyFileSync(configPath, backupPath);
-    }
-
-    fs.writeFileSync(tempPath, serialized, "utf8");
-    if (fs.existsSync(configPath)) {
-      fs.unlinkSync(configPath);
-    }
-    fs.renameSync(tempPath, configPath);
+    writeConfigToPath(configPath, schemaResult.data);
   } catch (error) {
     return configError(
       "CONFIG_WRITE_FAILED",
@@ -1417,6 +1518,12 @@ ipcMain.handle("launcher:getConfig", async (): Promise<ApiResult<LauncherConfig>
 
 ipcMain.handle("launcher:reloadConfig", async (): Promise<ReloadResult> => {
   return loadConfig();
+});
+
+ipcMain.handle("launcher:consumeRecoveryNotice", async (): Promise<string | null> => {
+  const notice = pendingRecoveryNotice;
+  pendingRecoveryNotice = null;
+  return notice;
 });
 
 ipcMain.handle("launcher:quit", async (): Promise<void> => {

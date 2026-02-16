@@ -423,7 +423,8 @@ export default function App(): JSX.Element {
     setSelectedCategoryId(null);
     setSelectedIndex(0);
     setEmptyStateMenuPosition(null);
-    setStatusText(`Loaded ${normalizedConfig.items.length} items.`);
+    const recoveryNotice = await window.launcherApi.consumeRecoveryNotice();
+    setStatusText(recoveryNotice ?? `Loaded ${normalizedConfig.items.length} items.`);
     setLoading(false);
 
     if (normalizedConfig !== result.data) {

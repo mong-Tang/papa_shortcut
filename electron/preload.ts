@@ -14,6 +14,9 @@ const launcherApi = {
   reloadConfig: (): Promise<ReloadResult> => {
     return ipcRenderer.invoke("launcher:reloadConfig");
   },
+  consumeRecoveryNotice: (): Promise<string | null> => {
+    return ipcRenderer.invoke("launcher:consumeRecoveryNotice");
+  },
   quit: (): Promise<void> => {
     return ipcRenderer.invoke("launcher:quit");
   },
