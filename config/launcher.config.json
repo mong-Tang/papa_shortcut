@@ -1,7 +1,7 @@
-{
+﻿{
   "version": 2,
   "app": {
-    "title": "Papa Launcher",
+    "title": "mongTang",
     "fullscreen": false,
     "mode": "widget",
     "widget": {
@@ -15,90 +15,94 @@
       "resizable": true,
       "frame": false,
       "hideOnBlur": false,
-      "hideTrigger": "outside-click",
-      "blurBehavior": "windows-docking",
-      "edgeVisiblePx": 4,
-      "toggleShortcut": "Control+Shift+Space"
+      "hideTrigger": "blur",
+      "blurBehavior": "hide",
+      "edgeVisiblePx": 4
     },
     "theme": "blue"
   },
   "categories": [
     {
       "id": "all",
-      "label": "전체"
+      "label": "?꾩껜"
     },
     {
       "id": "document",
-      "label": "문서"
+      "label": "臾몄꽌"
     },
     {
       "id": "game",
-      "label": "게임"
+      "label": "寃뚯엫"
     },
     {
       "id": "tool",
-      "label": "도구"
+      "label": "?꾧뎄"
     },
     {
       "id": "web",
-      "label": "웹"
+      "label": "??
     }
   ],
   "items": [
     {
       "id": "notepad",
-      "name": "메모장",
+      "name": "硫붾え??,
       "categoryId": "tool",
       "target": "C:/Windows/System32/notepad.exe",
       "icon": "assets/icons/notepad.svg",
       "keywords": [
-        "메모",
-        "텍스트"
+        "硫붾え",
+        "?띿뒪??
       ]
     },
     {
       "id": "calc",
-      "name": "계산기",
+      "name": "怨꾩궛湲?,
       "categoryId": "tool",
       "target": "C:/Windows/System32/calc.exe",
       "icon": "assets/icons/calculator.svg",
       "keywords": [
-        "수학",
-        "숫자"
+        "?섑븰",
+        "?レ옄"
       ]
     },
     {
       "id": "explorer",
-      "name": "문서",
+      "name": "臾몄꽌",
       "categoryId": "document",
       "target": "C:/Users/mongTang/Documents",
       "icon": "assets/icons/folder.svg",
       "keywords": [
-        "폴더",
-        "파일"
+        "?대뜑",
+        "?뚯씪"
       ]
     },
     {
       "id": "naver",
-      "name": "네이버",
+      "name": "?ㅼ씠踰?,
       "categoryId": "web",
       "target": "https://www.naver.com",
       "icon": "assets/icons/web.svg",
       "keywords": [
-        "검색",
-        "포털"
+        "寃??,
+        "?ы꽭"
       ]
     },
     {
       "id": "steam",
-      "name": "스팀",
+      "name": "?ㅽ?",
       "categoryId": "game",
       "target": "C:/Program Files (x86)/Steam/Steam.exe",
       "icon": "assets/icons/game.svg",
       "keywords": [
-        "스팀",
-        "게임"
+        "?ㅽ?",
+        "寃뚯엫"
       ]
     }
   ]
 }
+
+
+
+
+

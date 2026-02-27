@@ -546,6 +546,19 @@ button:disabled {
   padding: 0 10px;
 }
 
+.editor-input-with-action {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.editor-input-with-action .icon-picker-btn {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0 10px;
+}
+
 .danger {
   background: linear-gradient(140deg, #9f2f44, #c4465b);
 }
@@ -554,6 +567,11 @@ button:disabled {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.editor-close-btn {
+  min-height: 36px;
+  min-width: 124px;
 }
 
 @media (max-width: 760px) {

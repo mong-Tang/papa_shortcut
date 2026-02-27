@@ -29,7 +29,7 @@ const MIN_WIDGET_HEIGHT_PX = 600;
 const DEFAULT_RECOVERY_CONFIG: LauncherConfig = {
   version: 2,
   app: {
-    title: "Papa Launcher",
+    title: "mongTang",
     fullscreen: false,
     mode: "widget",
     widget: {
@@ -43,10 +43,9 @@ const DEFAULT_RECOVERY_CONFIG: LauncherConfig = {
       resizable: true,
       frame: false,
       hideOnBlur: false,
-      hideTrigger: "outside-click",
+      hideTrigger: "blur",
       blurBehavior: "windows-docking",
-      edgeVisiblePx: 30,
-      toggleShortcut: "Control+Shift+Space",
+      edgeVisiblePx: 4,
     },
     theme: "blue",
   },
@@ -66,13 +65,21 @@ let cachedConfigForRenderer: LauncherConfig | null = null;
 let widgetModeEnabled = false;
 let widgetHideOnTrigger = false;
 let widgetDockOnTrigger = false;
-let widgetHideTrigger: "blur" | "outside-click" = "outside-click";
+let widgetHideTrigger: "blur" | "outside-click" = "blur";
 let widgetDocked = false;
 let widgetEdgeVisiblePx = 6;
 let widgetHomeBounds: { width: number; height: number; x: number; y: number } | null = null;
 let widgetCursorWatchInterval: NodeJS.Timeout | null = null;
 let widgetFocusWatchInterval: NodeJS.Timeout | null = null;
+let widgetFocusAcquireTimer: NodeJS.Timeout | null = null;
+let widgetRestoreBlurGuardTimer: NodeJS.Timeout | null = null;
+let widgetRestoreBlurGuardExpireAt = 0;
+let lastWidgetBlurActionAt = 0;
+let widgetCursorRestoreReady = false;
+let widgetFocusWatchCursorInsideSeen = false;
+let widgetPointerLeaveAutoDockEnabled = true;
 let widgetOutsideClickWatcher: WindowsOutsideClickWatcher | null = null;
+let widgetOutsideClickFallbackApplied = false;
 let widgetToggleShortcut: string | null = null;
 let smokeEnterExpectedItemId: string | null = null;
 let smokeEnterLaunchMatched = false;
@@ -291,6 +298,24 @@ function resolveRendererAssetPath(assetPath: string | undefined): string | undef
   return pathToFileURL(absolutePath).toString();
 }
 
+function getDefaultIconAssetPathForTarget(target: string): string | undefined {
+  const normalizedTarget = target.trim();
+  if (!normalizedTarget) {
+    return undefined;
+  }
+  if (/^(https?:\/\/|file:\/\/|data:)/i.test(normalizedTarget)) {
+    return undefined;
+  }
+
+  const targetWithoutQuery = normalizedTarget.split(/[?#]/, 1)[0];
+  const extension = path.extname(targetWithoutQuery).toLowerCase();
+  if (extension === ".txt") {
+    return "assets/icons/text-file.svg";
+  }
+
+  return undefined;
+}
+
 function toRendererConfig(config: LauncherConfig): LauncherConfig {
   return {
     ...config,
@@ -300,7 +325,7 @@ function toRendererConfig(config: LauncherConfig): LauncherConfig {
     },
     items: config.items.map((item) => ({
       ...item,
-      icon: resolveRendererAssetPath(item.icon),
+      icon: resolveRendererAssetPath(item.icon ?? getDefaultIconAssetPathForTarget(item.target)),
     })),
   };
 }
@@ -1007,6 +1032,57 @@ function clearWidgetFocusWatch(): void {
   widgetFocusWatchInterval = null;
 }
 
+function clearRestoreBlurGuard(): void {
+  if (widgetRestoreBlurGuardTimer) {
+    clearInterval(widgetRestoreBlurGuardTimer);
+    widgetRestoreBlurGuardTimer = null;
+  }
+  widgetRestoreBlurGuardExpireAt = 0;
+}
+
+function armRestoreBlurGuard(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || !widgetModeEnabled) {
+    return;
+  }
+
+  clearRestoreBlurGuard();
+  widgetRestoreBlurGuardExpireAt = Date.now() + 3000;
+  appendLog("Restore blur guard armed for 3000ms.");
+
+  widgetRestoreBlurGuardTimer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || !widgetModeEnabled) {
+      clearRestoreBlurGuard();
+      return;
+    }
+
+    if (widgetDocked || !mainWindow.isVisible()) {
+      clearRestoreBlurGuard();
+      return;
+    }
+
+    if (Date.now() >= widgetRestoreBlurGuardExpireAt) {
+      appendLog("Restore blur guard expired without fallback action.");
+      clearRestoreBlurGuard();
+      return;
+    }
+
+    const focusedWindow = BrowserWindow.getFocusedWindow();
+    if (focusedWindow === mainWindow) {
+      return;
+    }
+
+    if (!focusedWindow) {
+      return;
+    }
+
+    appendLog(
+      `Restore blur guard fallback executed (focusedWindow=${focusedWindow.getTitle()}).`,
+    );
+    clearRestoreBlurGuard();
+    applyWidgetHideAction("blur");
+  }, 120);
+}
+
 function clearWidgetOutsideClickWatch(): void {
   if (!widgetOutsideClickWatcher) {
     return;
@@ -1021,7 +1097,128 @@ function hasWidgetFocus(): boolean {
   if (!mainWindow) {
     return false;
   }
-  return mainWindow.isFocused() || mainWindow.webContents.isFocused();
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  return focusedWindow === mainWindow;
+}
+
+function forceFocusMainWindow(options?: { sustain?: boolean }): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const sustain = options?.sustain ?? true;
+
+  if (widgetFocusAcquireTimer) {
+    clearInterval(widgetFocusAcquireTimer);
+    widgetFocusAcquireTimer = null;
+  }
+
+  let focusLogged = false;
+  const attemptFocus = (stage: string): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    const wasAlwaysOnTop = mainWindow.isAlwaysOnTop();
+    mainWindow.show();
+    mainWindow.moveTop();
+    if (process.platform === "win32") {
+      mainWindow.setAlwaysOnTop(true, "screen-saver");
+    }
+    mainWindow.focus();
+    mainWindow.webContents.focus();
+    if (process.platform === "win32" && !wasAlwaysOnTop) {
+      setTimeout(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          return;
+        }
+        mainWindow.setAlwaysOnTop(false);
+      }, 80);
+    }
+    if (hasWidgetFocus() && !focusLogged) {
+      appendLog(`Widget focus acquired stage=${stage}`);
+      focusLogged = true;
+    }
+  };
+
+  attemptFocus("initial");
+  if (hasWidgetFocus()) {
+    return;
+  }
+
+  if (!sustain) {
+    return;
+  }
+
+  const intervalMs = 50;
+  const maxDurationMs = 3000;
+  let elapsedMs = 0;
+  widgetFocusAcquireTimer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      if (widgetFocusAcquireTimer) {
+        clearInterval(widgetFocusAcquireTimer);
+        widgetFocusAcquireTimer = null;
+      }
+      return;
+    }
+
+    if (hasWidgetFocus()) {
+      if (widgetFocusAcquireTimer) {
+        clearInterval(widgetFocusAcquireTimer);
+        widgetFocusAcquireTimer = null;
+      }
+      return;
+    }
+
+    elapsedMs += intervalMs;
+    attemptFocus(`retry-${Math.max(1, Math.floor(elapsedMs / intervalMs))}`);
+    if (hasWidgetFocus()) {
+      if (widgetFocusAcquireTimer) {
+        clearInterval(widgetFocusAcquireTimer);
+        widgetFocusAcquireTimer = null;
+      }
+      return;
+    }
+
+    if (elapsedMs >= maxDurationMs) {
+      appendLog("Widget focus not acquired within 3000ms.");
+      if (widgetFocusAcquireTimer) {
+        clearInterval(widgetFocusAcquireTimer);
+        widgetFocusAcquireTimer = null;
+      }
+    }
+  }, intervalMs);
+}
+
+function revealAndForceFocus(
+  reason: string,
+  options?: { aggressive?: boolean },
+): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const aggressive = options?.aggressive ?? true;
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+
+  appendLog(`Reveal + focus requested reason=${reason}`);
+  forceFocusMainWindow({ sustain: aggressive });
+
+  const retryDelays = aggressive ? [120, 280, 520] : [];
+  retryDelays.forEach((delay, index) => {
+    setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed() || hasWidgetFocus()) {
+        return;
+      }
+
+      appendLog(
+        `Reveal focus fallback retry=${index + 1} reason=${reason} delayMs=${delay}`,
+      );
+      forceFocusMainWindow({ sustain: aggressive });
+    }, delay);
+  });
 }
 
 function isPointInsideBounds(
@@ -1057,6 +1254,10 @@ function applyWidgetHideAction(trigger: "blur" | "outside-click"): void {
   if (!mainWindow || !widgetModeEnabled || !mainWindow.isVisible()) {
     return;
   }
+
+  // Reset leave-based auto-dock gate after a completed hide/dock cycle.
+  widgetPointerLeaveAutoDockEnabled = true;
+  widgetFocusWatchCursorInsideSeen = false;
 
   if (widgetHideOnTrigger) {
     appendLog(`Widget hide action executed trigger=${trigger}`);
@@ -1103,6 +1304,15 @@ function startWidgetOutsideClickWatch(): void {
       },
       onWatcherNotice: (message) => {
         appendLog(`Outside-click watcher notice: ${message}`);
+        if (
+          !widgetOutsideClickFallbackApplied &&
+          widgetHideTrigger === "outside-click" &&
+          message.includes("worker exited")
+        ) {
+          widgetHideTrigger = "blur";
+          widgetOutsideClickFallbackApplied = true;
+          appendLog("Outside-click watcher unavailable; fallback trigger switched to blur.");
+        }
       },
       onOutsideClick: ({ button, point }) => {
         appendLog(
@@ -1116,6 +1326,11 @@ function startWidgetOutsideClickWatch(): void {
     });
   } catch (error) {
     appendLog(`Outside-click watcher init failed: ${formatUnknownError(error)}`);
+    if (!widgetOutsideClickFallbackApplied && widgetHideTrigger === "outside-click") {
+      widgetHideTrigger = "blur";
+      widgetOutsideClickFallbackApplied = true;
+      appendLog("Outside-click watcher init failed; fallback trigger switched to blur.");
+    }
     return;
   }
 
@@ -1130,7 +1345,7 @@ function startWidgetFocusWatch(): void {
     return;
   }
 
-  if (!widgetDockOnTrigger) {
+  if (widgetHideTrigger !== "blur" || !widgetDockOnTrigger) {
     return;
   }
 
@@ -1139,7 +1354,7 @@ function startWidgetFocusWatch(): void {
       return;
     }
 
-    if (!widgetDockOnTrigger || widgetDocked) {
+    if (!widgetDockOnTrigger || widgetDocked || widgetHideTrigger !== "blur") {
       return;
     }
 
@@ -1147,16 +1362,26 @@ function startWidgetFocusWatch(): void {
       return;
     }
 
+    if (!widgetPointerLeaveAutoDockEnabled) {
+      return;
+    }
+
     const cursorPoint = screen.getCursorScreenPoint();
     const bounds = mainWindow.getBounds();
     const cursorInsideWindow = isPointInsideBounds(cursorPoint, bounds);
 
-    // Fallback for Windows focus-steal restrictions:
-    // if focus state is unreliable after hover-restore, dock once cursor leaves.
-    if (!hasWidgetFocus() && !cursorInsideWindow) {
-      appendLog("Widget docked by focus-watch (unfocused + cursor outside).");
-      dockWidgetWindow();
+    if (cursorInsideWindow) {
+      widgetFocusWatchCursorInsideSeen = true;
+      return;
     }
+
+    if (!widgetFocusWatchCursorInsideSeen) {
+      return;
+    }
+
+    widgetFocusWatchCursorInsideSeen = false;
+    appendLog("Widget docked by focus-watch (cursor leave).");
+    dockWidgetWindow();
   }, 140);
 }
 
@@ -1193,20 +1418,12 @@ function restoreDockedWidget(shouldFocus: boolean): void {
   );
 
   widgetDocked = false;
+  widgetFocusWatchCursorInsideSeen = false;
   clearWidgetCursorWatch();
 
   if (shouldFocus) {
-    mainWindow.show();
-    mainWindow.moveTop();
-    mainWindow.focus();
-    mainWindow.webContents.focus();
-    setTimeout(() => {
-      if (!mainWindow || widgetDocked || hasWidgetFocus()) {
-        return;
-      }
-      mainWindow.focus();
-      mainWindow.webContents.focus();
-    }, 80);
+    armRestoreBlurGuard();
+    revealAndForceFocus("restore-docked", { aggressive: false });
   }
 }
 
@@ -1214,6 +1431,9 @@ function startWidgetCursorWatch(): void {
   if (!mainWindow || !widgetDocked || widgetCursorWatchInterval) {
     return;
   }
+
+  // Require cursor to leave strip once before allowing restore.
+  widgetCursorRestoreReady = false;
 
   widgetCursorWatchInterval = setInterval(() => {
     if (!mainWindow || !widgetDocked) {
@@ -1229,7 +1449,13 @@ function startWidgetCursorWatch(): void {
       cursorPoint.y >= bounds.y &&
       cursorPoint.y <= bounds.y + bounds.height;
 
-    if (onVisibleStrip) {
+    if (!onVisibleStrip) {
+      widgetCursorRestoreReady = true;
+      return;
+    }
+
+    if (widgetCursorRestoreReady) {
+      widgetCursorRestoreReady = false;
       restoreDockedWidget(true);
     }
   }, 120);
@@ -1254,6 +1480,8 @@ function dockWidgetWindow(): void {
     `Widget docked requested x=${dockBounds.x} y=${dockBounds.y} w=${dockBounds.width} h=${dockBounds.height}; applied x=${applied.x} y=${applied.y} w=${applied.width} h=${applied.height}`,
   );
   widgetDocked = true;
+  widgetFocusWatchCursorInsideSeen = false;
+  widgetCursorRestoreReady = false;
   startWidgetCursorWatch();
 }
 
@@ -1269,29 +1497,21 @@ function createMainWindow(): void {
   const widgetBounds = getWidgetBounds(appConfig);
   const widget = appConfig.widget ?? {};
   const blurBehavior = widget.blurBehavior ?? (widget.hideOnBlur ? "hide" : "none");
-  const configuredHideTrigger = widget.hideTrigger ?? "outside-click";
-  const shouldFallbackOutsideClickTrigger =
-    isWidgetMode &&
-    process.platform === "win32" &&
-    app.isPackaged &&
-    configuredHideTrigger === "outside-click";
-  const hideTrigger = shouldFallbackOutsideClickTrigger
-    ? "blur"
-    : configuredHideTrigger;
+  const configuredHideTrigger = widget.hideTrigger ?? "blur";
+  const hideTrigger =
+    process.platform === "win32" && configuredHideTrigger === "outside-click"
+      ? "blur"
+      : configuredHideTrigger;
   const widgetResizable = isWidgetMode ? (widget.resizable ?? false) : true;
   const dockOnBlurBehavior =
     blurBehavior === "dock-right-edge" || blurBehavior === "windows-docking";
 
-  if (shouldFallbackOutsideClickTrigger) {
-    appendLog(
-      "Outside-click trigger disabled in packaged Windows build; fallback to blur trigger.",
-    );
-  }
-
   widgetModeEnabled = isWidgetMode;
   widgetDocked = false;
+  lastWidgetBlurActionAt = 0;
   clearWidgetCursorWatch();
   clearWidgetFocusWatch();
+  clearRestoreBlurGuard();
   clearWidgetOutsideClickWatch();
   clearWidgetSizePersistTimer();
   widgetHomeBounds = isWidgetMode ? { ...widgetBounds } : null;
@@ -1299,14 +1519,31 @@ function createMainWindow(): void {
     ? { width: widgetBounds.width, height: widgetBounds.height }
     : null;
   widgetEdgeVisiblePx = isWidgetMode
-    ? Math.max(2, Math.min(60, widget.edgeVisiblePx ?? 30))
+    ? Math.max(2, Math.min(60, widget.edgeVisiblePx ?? 4))
     : 30;
   widgetHideOnTrigger = isWidgetMode ? blurBehavior === "hide" : false;
   widgetDockOnTrigger = isWidgetMode ? dockOnBlurBehavior : false;
-  widgetHideTrigger = isWidgetMode ? hideTrigger : "outside-click";
+  widgetHideTrigger = isWidgetMode ? hideTrigger : "blur";
+  if (
+    isWidgetMode &&
+    process.platform === "win32" &&
+    configuredHideTrigger === "outside-click"
+  ) {
+    appendLog(
+      "Windows security compatibility: hideTrigger=outside-click overridden to blur.",
+    );
+  }
   widgetToggleShortcut = isWidgetMode
-    ? widget.toggleShortcut?.trim() || "Control+Shift+Space"
+    ? widget.toggleShortcut?.trim() || null
     : null;
+  widgetOutsideClickFallbackApplied = false;
+  if (widgetFocusAcquireTimer) {
+    clearInterval(widgetFocusAcquireTimer);
+    widgetFocusAcquireTimer = null;
+  }
+  widgetCursorRestoreReady = false;
+  widgetFocusWatchCursorInsideSeen = false;
+  widgetPointerLeaveAutoDockEnabled = true;
 
   mainWindow = new BrowserWindow({
     title: windowTitle,
@@ -1336,9 +1573,16 @@ function createMainWindow(): void {
     },
   });
 
+  if (isWidgetMode) {
+    setTimeout(() => {
+      revealAndForceFocus("post-create");
+    }, 0);
+  }
+
   mainWindow.once("ready-to-show", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
+    forceFocusMainWindow();
+    setTimeout(() => forceFocusMainWindow(), 80);
+    setTimeout(() => forceFocusMainWindow(), 220);
     if (isWidgetMode) {
       mainWindow?.setPosition(widgetBounds.x, widgetBounds.y);
       widgetHomeBounds = { ...widgetBounds };
@@ -1370,11 +1614,19 @@ function createMainWindow(): void {
     }
   });
 
-  mainWindow.on("blur", () => {
+  const handleWidgetBlur = (source: string): void => {
     if (!isWidgetMode) {
       return;
     }
-    appendLog("Widget blur event received.");
+
+    const now = Date.now();
+    if (now - lastWidgetBlurActionAt < 140) {
+      return;
+    }
+    lastWidgetBlurActionAt = now;
+
+    clearRestoreBlurGuard();
+    appendLog(`Widget blur event received source=${source}.`);
 
     // blurBehavior=windows-docking (or dock-right-edge) should dock on blur
     // even when hideTrigger is outside-click.
@@ -1383,14 +1635,31 @@ function createMainWindow(): void {
     }
 
     applyWidgetHideAction("blur");
-  });
+  };
+
+  const onWindowBlur = (): void => {
+    handleWidgetBlur("window");
+  };
+  const onWebContentsBlur = (): void => {
+    handleWidgetBlur("webContents");
+  };
+  const onAppBrowserWindowBlur = (_event: unknown, blurredWindow: BrowserWindow): void => {
+    if (!mainWindow || blurredWindow !== mainWindow) {
+      return;
+    }
+    handleWidgetBlur("app-browser-window-blur");
+  };
+
+  mainWindow.on("blur", onWindowBlur);
+  mainWindow.webContents.on("blur", onWebContentsBlur);
+  app.on("browser-window-blur", onAppBrowserWindowBlur);
 
   mainWindow.on("focus", () => {
     if (!isWidgetMode || !widgetDocked) {
       return;
     }
 
-    restoreDockedWidget(false);
+    restoreDockedWidget(true);
   });
 
   mainWindow.on("resize", () => {
@@ -1413,7 +1682,9 @@ function createMainWindow(): void {
   mainWindow.on("closed", () => {
     clearWidgetCursorWatch();
     clearWidgetFocusWatch();
+    clearRestoreBlurGuard();
     clearWidgetOutsideClickWatch();
+    app.off("browser-window-blur", onAppBrowserWindowBlur);
     clearWidgetSizePersistTimer();
     widgetDocked = false;
     mainWindow = null;
@@ -1433,6 +1704,13 @@ function createMainWindow(): void {
       );
     },
   );
+
+  mainWindow.webContents.once("did-finish-load", () => {
+    if (!isWidgetMode) {
+      return;
+    }
+    revealAndForceFocus("did-finish-load");
+  });
 
   if (DEV_SERVER_URL) {
     void mainWindow.loadURL(DEV_SERVER_URL);
@@ -1456,11 +1734,11 @@ function focusMainWindowForSecondInstance(): void {
   }
 
   if (!mainWindow.isVisible()) {
-    mainWindow.show();
+    revealAndForceFocus("second-instance-hidden");
+    return;
   }
 
-  mainWindow.focus();
-  mainWindow.webContents.focus();
+  revealAndForceFocus("second-instance-visible");
 }
 
 function toggleWidgetWindow(): void {
@@ -1479,10 +1757,11 @@ function toggleWidgetWindow(): void {
   }
 
   if (!mainWindow.isVisible()) {
-    mainWindow.show();
+    revealAndForceFocus("toggle-show");
+    return;
   }
 
-  mainWindow.focus();
+  revealAndForceFocus("toggle-visible");
 }
 
 function registerWidgetShortcut(): void {
@@ -1526,6 +1805,25 @@ ipcMain.handle("launcher:consumeRecoveryNotice", async (): Promise<string | null
   return notice;
 });
 
+ipcMain.handle("launcher:widgetBodyInteracted", async (): Promise<void> => {
+  if (!mainWindow || mainWindow.isDestroyed() || !widgetModeEnabled) {
+    return;
+  }
+  if (!mainWindow.isVisible() || widgetDocked) {
+    return;
+  }
+  if (!widgetDockOnTrigger || widgetHideTrigger !== "blur") {
+    return;
+  }
+  if (!widgetPointerLeaveAutoDockEnabled) {
+    return;
+  }
+
+  widgetPointerLeaveAutoDockEnabled = false;
+  widgetFocusWatchCursorInsideSeen = false;
+  appendLog("Widget pointer-leave auto-dock temporarily disabled by body interaction.");
+});
+
 ipcMain.handle("launcher:quit", async (): Promise<void> => {
   requestAppQuit("renderer-ipc");
 });
@@ -1544,10 +1842,7 @@ ipcMain.handle(
       : {
           title: "Select file to add",
           properties: ["openFile"],
-          filters: [
-            { name: "Executable Files", extensions: ["exe", "bat", "cmd", "com", "lnk"] },
-            { name: "All Files", extensions: ["*"] },
-          ],
+          filters: [{ name: "All Files", extensions: ["*"] }],
         };
     const result = ownerWindow
       ? await dialog.showOpenDialog(ownerWindow, options)
@@ -1569,6 +1864,35 @@ ipcMain.handle(
   }
   },
 );
+
+ipcMain.handle("launcher:pickItemIconPath", async (): Promise<string | null> => {
+  try {
+    const ownerWindow = BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined;
+    const options: OpenDialogOptions = {
+      title: "Select item icon",
+      properties: ["openFile"],
+      filters: [
+        { name: "Image Files", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp", "svg", "ico"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    };
+    const result = ownerWindow
+      ? await dialog.showOpenDialog(ownerWindow, options)
+      : await dialog.showOpenDialog(options);
+
+    if (result.canceled || result.filePaths.length === 0) {
+      appendLog("Pick item icon canceled.");
+      return null;
+    }
+
+    const selectedPath = normalizePathToPosix(result.filePaths[0]);
+    appendLog(`Pick item icon selected path=${selectedPath}`);
+    return selectedPath;
+  } catch (error) {
+    appendLog(`Pick item icon failed: ${formatUnknownError(error)}`);
+    return null;
+  }
+});
 
 ipcMain.handle("launcher:pickEmptyStateImage", async (): Promise<string | null> => {
   try {

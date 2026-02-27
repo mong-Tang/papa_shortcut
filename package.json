@@ -54,6 +54,7 @@
       }
     ],
     "win": {
+      "icon": "papa_Luncher1.ico",
       "signAndEditExecutable": false,
       "target": [
         {

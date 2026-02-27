@@ -12,8 +12,10 @@ interface LauncherApi {
   getConfig: () => Promise<ApiResult<LauncherConfig>>;
   reloadConfig: () => Promise<ReloadResult>;
   consumeRecoveryNotice: () => Promise<string | null>;
+  widgetBodyInteracted: () => Promise<void>;
   quit: () => Promise<void>;
   pickLaunchTarget: (targetType: "file" | "folder") => Promise<string | null>;
+  pickItemIconPath: () => Promise<string | null>;
   pickEmptyStateImage: () => Promise<string | null>;
   launchItem: (itemId: string) => Promise<LaunchResult>;
   saveConfig: (config: LauncherConfig) => Promise<SaveConfigResult>;

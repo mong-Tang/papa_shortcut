@@ -1,10 +1,10 @@
-﻿# papa_plan.md (Deprecated)
+﻿# session-bootstrap.md (Deprecated)
 
 Last Updated: 2026-02-20
 
-이 파일은 더 이상 기준 문서가 아닙니다.
+이 문서는 아카이브 용도로만 유지합니다.
 
 현재 기준 문서:
-- 계획: `PLAN.md`
 - 시작 절차: `BOOTSTRAP.md`
+- 계획: `PLAN.md`
 - 세션 상태: `SESSION_HANDOFF.md`

@@ -40,6 +40,10 @@ function normalizeText(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function isImageLikePath(value: string): boolean {
+  return /\.(png|jpe?g|gif|bmp|webp|svg|ico)(?:$|[?#])/i.test(value);
+}
+
 function getEditableCategories(categories: LauncherCategory[]): LauncherCategory[] {
   return categories.filter((category) => category.id !== "all");
 }
@@ -141,7 +145,10 @@ function getIconSrc(icon: string | undefined): string | undefined {
   if (!icon) {
     return undefined;
   }
-  if (/^(https?:\/\/|file:\/\/|data:)/i.test(icon)) {
+  if (/^data:/i.test(icon)) {
+    return /^data:image\//i.test(icon) ? icon : undefined;
+  }
+  if (/^(https?:\/\/|file:\/\/)/i.test(icon) && isImageLikePath(icon)) {
     return icon;
   }
   return undefined;
@@ -276,6 +283,7 @@ function validateItems(items: LauncherItem[], categories: LauncherCategory[]): s
 }
 
 export default function App(): JSX.Element {
+  const EDITOR_AUTOSAVE_DEBOUNCE_MS = 500;
   const [config, setConfig] = useState<LauncherConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [configError, setConfigError] = useState<ErrorModal | null>(null);
@@ -294,6 +302,7 @@ export default function App(): JSX.Element {
   const [editorCategoryId, setEditorCategoryId] = useState<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
+  const [deleteConfirmItem, setDeleteConfirmItem] = useState<LauncherItem | null>(null);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameSaving, setRenameSaving] = useState(false);
   const [renameDraftLabels, setRenameDraftLabels] = useState<Record<CoreCategoryId, string>>({
@@ -306,6 +315,7 @@ export default function App(): JSX.Element {
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const itemListRef = useRef<HTMLElement>(null);
+  const lastBodyInteractionNotifyAtRef = useRef(0);
 
   const categoryChips = useMemo<CategoryChip[]>(() => {
     const labelByCoreId = getCoreCategoryLabels(config?.categories ?? []);
@@ -599,7 +609,23 @@ export default function App(): JSX.Element {
     setEditorOriginalItems([]);
     setEditorCategoryId(null);
     setEditingItemId(null);
+    setDeleteConfirmItem(null);
     setRenameModalOpen(false);
+  }
+
+  async function closeEditorAndFlush(): Promise<void> {
+    if (editorSaving) {
+      return;
+    }
+
+    if (editorDirty && editorCategoryId) {
+      const saved = await saveEditorItems({ silent: true });
+      if (!saved) {
+        return;
+      }
+    }
+
+    closeEditor(true);
   }
 
   function onClickPrimaryAddButton(): void {
@@ -716,6 +742,7 @@ export default function App(): JSX.Element {
       categoryId,
       target: draft.target,
       workingDir: draft.workingDir,
+      icon: isImageLikePath(draft.target) ? draft.target : undefined,
     };
 
     const nextScopedItems = [
@@ -788,6 +815,19 @@ export default function App(): JSX.Element {
     setStatusText("Empty-state background updated.");
   }
 
+  async function pickEditingItemIconPath(): Promise<void> {
+    if (!editingItem || editorSaving || renameSaving) {
+      return;
+    }
+
+    const selectedIconPath = await window.launcherApi.pickItemIconPath();
+    if (!selectedIconPath) {
+      return;
+    }
+
+    updateEditingItem({ icon: selectedIconPath });
+  }
+
   function updateEditingItem(patch: Partial<LauncherItem>): void {
     if (!editingItemId) {
       return;
@@ -797,12 +837,12 @@ export default function App(): JSX.Element {
     );
   }
 
-  function deleteEditingItem(): void {
-    if (!editingItemId) {
+  function deleteItemById(itemId: string): void {
+    if (!itemId) {
       return;
     }
     setEditorItems((current) => {
-      const nextItems = current.filter((item) => item.id !== editingItemId);
+      const nextItems = current.filter((item) => item.id !== itemId);
       setEditingItemId(nextItems[0]?.id ?? null);
       return nextItems;
     });
@@ -812,18 +852,20 @@ export default function App(): JSX.Element {
     if (!editingItem) {
       return;
     }
-
-    const shouldDelete = window.confirm(`Delete '${editingItem.name}' item?`);
-    if (!shouldDelete) {
-      return;
-    }
-
-    deleteEditingItem();
+    setDeleteConfirmItem(editingItem);
   }
 
-  async function saveEditorItems(): Promise<void> {
-    if (!config) {
+  function confirmDeleteEditingItem(): void {
+    if (!deleteConfirmItem) {
       return;
+    }
+    deleteItemById(deleteConfirmItem.id);
+    setDeleteConfirmItem(null);
+  }
+
+  async function saveEditorItems(options?: { silent?: boolean }): Promise<boolean> {
+    if (!config) {
+      return false;
     }
 
     if (!editorCategoryId) {
@@ -831,7 +873,7 @@ export default function App(): JSX.Element {
         title: "Save Failed",
         message: "Select a category first.",
       });
-      return;
+      return false;
     }
 
     const scopedItems = editorItems.map((item) =>
@@ -848,7 +890,7 @@ export default function App(): JSX.Element {
         title: "Validation Failed",
         message: validationError,
       });
-      return;
+      return false;
     }
 
     setEditorSaving(true);
@@ -864,16 +906,19 @@ export default function App(): JSX.Element {
         message: result.error.message,
         details: result.error.details,
       });
-      return;
+      return false;
     }
 
     setConfig(result.data);
     syncEditorCategoryItems(result.data, editorCategoryId, editingItemId);
-    setStatusText(
-      `Saved ${scopedItems.length} items${
-        editorSelectedCategory ? ` (${editorSelectedCategory.label})` : ""
-      }.`,
-    );
+    if (!options?.silent) {
+      setStatusText(
+        `Saved ${scopedItems.length} items${
+          editorSelectedCategory ? ` (${editorSelectedCategory.label})` : ""
+        }.`,
+      );
+    }
+    return true;
   }
 
   async function runItem(item: LauncherItem): Promise<void> {
@@ -931,6 +976,20 @@ export default function App(): JSX.Element {
     }
 
     return filteredItems.find((item) => item.id === focusedItemId) ?? null;
+  }
+
+  function notifyWidgetBodyInteracted(): void {
+    if (currentMode !== "widget") {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastBodyInteractionNotifyAtRef.current < 250) {
+      return;
+    }
+    lastBodyInteractionNotifyAtRef.current = now;
+
+    void window.launcherApi.widgetBodyInteracted();
   }
 
   useEffect(() => {
@@ -1004,6 +1063,29 @@ export default function App(): JSX.Element {
   }, [config, currentMode]);
 
   useEffect(() => {
+    if (!editorOpen || !editorCategoryId || !editorDirty || editorSaving) {
+      return;
+    }
+    if (renameModalOpen || deleteConfirmItem) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void saveEditorItems({ silent: true });
+    }, EDITOR_AUTOSAVE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    editorOpen,
+    editorCategoryId,
+    editorDirty,
+    editorItems,
+    editorSaving,
+    renameModalOpen,
+    deleteConfirmItem,
+  ]);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       // Keep Enter launch working even when IME composition state is reported.
       if (event.isComposing && event.key !== "Enter") {
@@ -1027,6 +1109,14 @@ export default function App(): JSX.Element {
       }
 
       if (editorOpen) {
+        if (deleteConfirmItem) {
+          if (event.key === "Escape") {
+            setDeleteConfirmItem(null);
+            event.preventDefault();
+          }
+          return;
+        }
+
         if (renameModalOpen) {
           if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
             event.preventDefault();
@@ -1048,7 +1138,7 @@ export default function App(): JSX.Element {
         }
 
         if (event.key === "Escape") {
-          closeEditor();
+          void closeEditorAndFlush();
           event.preventDefault();
         }
         return;
@@ -1095,18 +1185,20 @@ export default function App(): JSX.Element {
     filteredItems,
     selectedItem,
     editorOpen,
+    deleteConfirmItem,
     renameModalOpen,
     errorModal,
     emptyStateMenuPosition,
     editorDirty,
     editorSaving,
     renameSaving,
+    deleteConfirmItem,
   ]);
 
   if (loading) {
     return (
       <main className="loading">
-        <h1>Papa Launcher</h1>
+        <h1>mongTang</h1>
         <p>Loading widget...</p>
       </main>
     );
@@ -1127,15 +1219,15 @@ export default function App(): JSX.Element {
 
   return (
     <main className="widget-root">
-      <section className="widget-shell">
+      <section className="widget-shell" onPointerDownCapture={notifyWidgetBodyInteracted}>
         <header className="widget-header">
           <div>
-            <h1>{config?.app.title ?? "Papa Launcher"}</h1>
+            <h1>{config?.app.title ?? "mongTang"}</h1>
             <p>Desktop Widget Launcher</p>
           </div>
           <div className="header-actions">
             <button type="button" onClick={openEditor}>
-              Edit
+              Add
             </button>
             <button type="button" onClick={() => void loadConfig(true)}>
               Reload
@@ -1249,7 +1341,7 @@ export default function App(): JSX.Element {
                       {iconSrc ? (
                         <img src={iconSrc} alt="" />
                       ) : (
-                        <span>{item.name.slice(0, 1).toUpperCase()}</span>
+                        <span aria-hidden="true" />
                       )}
                     </div>
                     <div className="item-content">
@@ -1301,7 +1393,7 @@ export default function App(): JSX.Element {
         <div className="modal-backdrop" role="presentation">
           <section className="modal editor-modal" role="dialog" aria-modal="true">
             <header>
-              <h2>Item Editor</h2>
+              <h2>Item Add/Edit</h2>
             </header>
 
             <div className="editor-body">
@@ -1326,6 +1418,16 @@ export default function App(): JSX.Element {
                 <div className="editor-list-actions">
                   <button
                     type="button"
+                    onClick={onClickPrimaryAddButton}
+                    disabled={
+                      editorSaving ||
+                      renameSaving
+                    }
+                  >
+                    {primaryAddButtonLabel}
+                  </button>
+                  <button
+                    type="button"
                     onClick={openRenameModal}
                     disabled={
                       editorSaving ||
@@ -1334,16 +1436,6 @@ export default function App(): JSX.Element {
                     }
                   >
                     버튼 리네임
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onClickPrimaryAddButton}
-                    disabled={
-                      editorSaving ||
-                      renameSaving
-                    }
-                  >
-                    {primaryAddButtonLabel}
                   </button>
                   <button
                     type="button"
@@ -1435,11 +1527,21 @@ export default function App(): JSX.Element {
                     </label>
                     <label>
                       <span>Icon Path</span>
-                      <input
-                        type="text"
-                        value={editingItem.icon ?? ""}
-                        onChange={(event) => updateEditingItem({ icon: event.target.value })}
-                      />
+                      <div className="editor-input-with-action">
+                        <input
+                          type="text"
+                          value={editingItem.icon ?? ""}
+                          onChange={(event) => updateEditingItem({ icon: event.target.value })}
+                        />
+                        <button
+                          type="button"
+                          className="icon-picker-btn"
+                          onClick={() => void pickEditingItemIconPath()}
+                          disabled={editorSaving || renameSaving}
+                        >
+                          ...
+                        </button>
+                      </div>
                     </label>
                     <label>
                       <span>Keywords (comma separated)</span>
@@ -1459,20 +1561,11 @@ export default function App(): JSX.Element {
             <footer className="editor-footer">
               <button
                 type="button"
-                onClick={() => closeEditor()}
+                onClick={() => void closeEditorAndFlush()}
+                className="editor-close-btn"
                 disabled={editorSaving}
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void saveEditorItems()}
-                disabled={
-                  editorSaving ||
-                  !editorCategoryId
-                }
-              >
-                {editorSaving ? "Saving..." : "Save"}
+                닫기
               </button>
             </footer>
           </section>
@@ -1513,6 +1606,23 @@ export default function App(): JSX.Element {
               </button>
               <button type="button" onClick={() => void saveRenamedCategoryLabels()} disabled={renameSaving}>
                 {renameSaving ? "저장 중..." : "저장"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {deleteConfirmItem && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal" role="alertdialog" aria-modal="true">
+            <h2>Delete Item</h2>
+            <p>{`Delete '${deleteConfirmItem.name}' item?`}</p>
+            <footer className="editor-footer">
+              <button type="button" onClick={() => setDeleteConfirmItem(null)}>
+                취소
+              </button>
+              <button type="button" className="danger" onClick={confirmDeleteEditingItem}>
+                삭제
               </button>
             </footer>
           </section>

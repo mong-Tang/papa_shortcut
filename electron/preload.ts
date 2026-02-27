@@ -17,11 +17,17 @@ const launcherApi = {
   consumeRecoveryNotice: (): Promise<string | null> => {
     return ipcRenderer.invoke("launcher:consumeRecoveryNotice");
   },
+  widgetBodyInteracted: (): Promise<void> => {
+    return ipcRenderer.invoke("launcher:widgetBodyInteracted");
+  },
   quit: (): Promise<void> => {
     return ipcRenderer.invoke("launcher:quit");
   },
   pickLaunchTarget: (targetType: "file" | "folder"): Promise<string | null> => {
     return ipcRenderer.invoke("launcher:pickLaunchTarget", targetType);
+  },
+  pickItemIconPath: (): Promise<string | null> => {
+    return ipcRenderer.invoke("launcher:pickItemIconPath");
   },
   pickEmptyStateImage: (): Promise<string | null> => {
     return ipcRenderer.invoke("launcher:pickEmptyStateImage");
