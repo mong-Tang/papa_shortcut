@@ -10,10 +10,32 @@
   box-sizing: border-box;
 }
 
+:root {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+:root::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  min-height: 100vh;
+  min-height: 100%;
   background: transparent;
+  overflow: hidden;
+}
+
+body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .loading,
@@ -61,12 +83,15 @@ button:disabled {
 }
 
 .widget-root {
-  min-height: 100vh;
+  min-height: 100%;
+  height: 100%;
   padding: 0;
+  overflow: hidden;
 }
 
 .widget-shell {
-  min-height: 100vh;
+  min-height: 100%;
+  height: 100%;
   border-radius: 20px;
   overflow: hidden;
   border: 1px solid rgba(198, 220, 255, 0.26);
@@ -78,6 +103,16 @@ button:disabled {
   display: grid;
   grid-template-rows: auto auto auto auto 1fr auto;
   box-shadow: 0 16px 46px rgba(0, 0, 0, 0.35);
+}
+
+.widget-shell {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.widget-shell::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .widget-header {
@@ -201,6 +236,21 @@ button:disabled {
   display: grid;
   align-content: start;
   gap: 8px;
+  min-height: 0;
+}
+
+.item-list,
+.editor-list-items,
+.editor-form {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.item-list::-webkit-scrollbar,
+.editor-list-items::-webkit-scrollbar,
+.editor-form::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .empty {
@@ -418,6 +468,32 @@ button:disabled {
 
 .modal-warning .editor-footer button:last-child:hover {
   background: linear-gradient(140deg, #c8881f, #b87812);
+}
+
+.modal-danger {
+  background: linear-gradient(180deg, rgba(77, 12, 24, 0.95) 0%, rgba(54, 8, 18, 0.98) 100%);
+  border-color: rgba(255, 122, 140, 0.65);
+  color: #ffe1e6;
+  box-shadow: 0 0 0 1px rgba(255, 122, 140, 0.15), 0 12px 24px rgba(18, 6, 10, 0.55);
+}
+
+.modal-danger h2,
+.modal-danger p {
+  color: #ffe1e6;
+}
+
+.modal-danger .editor-footer button:first-child {
+  background: rgba(88, 18, 32, 0.92);
+  color: #ffd6de;
+}
+
+.modal-danger .editor-footer button:last-child {
+  background: linear-gradient(140deg, #d84159, #b83349);
+  color: #fff2f4;
+}
+
+.modal-danger .editor-footer button:last-child:hover {
+  background: linear-gradient(140deg, #c63a51, #a92e43);
 }
 
 .classify-modal {

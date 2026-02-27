@@ -1997,7 +1997,7 @@ export default function App(): JSX.Element {
 
       {deleteConfirmCategory && (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="alertdialog" aria-modal="true">
+          <section className="modal modal-warning" role="alertdialog" aria-modal="true">
             <h2>Delete Category</h2>
             <p>
               {`Delete category '${deleteConfirmCategory.label}' and remove ${deleteConfirmCategory.itemCount} items?`}

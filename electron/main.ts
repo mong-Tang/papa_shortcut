@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, shell } from "electron";
+import type { NativeImage } from "electron";
 import type { OpenDialogOptions } from "electron";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -300,6 +301,101 @@ function toImageDataUrl(filePath: string): string | null {
   } catch {
     return null;
   }
+}
+
+function nativeImageToDataUrl(image: NativeImage): string | null {
+  if (image.isEmpty()) {
+    return null;
+  }
+  try {
+    const buffer = image.toPNG();
+    return `data:image/png;base64,${buffer.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+function toNativePath(candidate: string): string {
+  if (process.platform !== "win32") {
+    return candidate;
+  }
+  return path.normalize(candidate.replace(/\//g, "\\"));
+}
+
+function shouldResolveFileIcon(target: string, icon: string | undefined): boolean {
+  const normalizedTarget = target.trim();
+  if (!normalizedTarget) {
+    return false;
+  }
+  const extension = path.extname(normalizedTarget.split(/[?#]/, 1)[0]).toLowerCase();
+  if (!extension) {
+    return false;
+  }
+  if (extension === ".url") {
+    return false;
+  }
+  if (!EXTENSION_ICON_CABINET[extension]) {
+    return false;
+  }
+  if (!icon) {
+    return true;
+  }
+  const defaultIcon = getDefaultIconAssetPathForTarget(normalizedTarget);
+  if (defaultIcon === icon) {
+    return true;
+  }
+  const resolvedDefault = resolveRendererAssetPath(defaultIcon);
+  return resolvedDefault === icon;
+}
+
+async function resolveFileIconDataUrl(target: string): Promise<string | null> {
+  const normalizedTarget = target.trim();
+  if (!normalizedTarget) {
+    appendLog("Icon extract skipped: empty target");
+    return null;
+  }
+  const nativeTarget = toNativePath(normalizedTarget);
+  if (!fs.existsSync(nativeTarget)) {
+    appendLog(`Icon extract skipped: target not found path=${nativeTarget}`);
+    return null;
+  }
+  const extension = path.extname(normalizedTarget.split(/[?#]/, 1)[0]).toLowerCase();
+  if (extension === ".lnk") {
+    try {
+      const shortcut = shell.readShortcutLink(nativeTarget);
+      const iconTarget = shortcut.icon?.trim() || shortcut.target?.trim();
+      if (!iconTarget) {
+        appendLog(`Icon extract skipped: shortcut has no icon/target path=${nativeTarget}`);
+        return null;
+      }
+      const nativeIconTarget = toNativePath(iconTarget);
+      if (!fs.existsSync(nativeIconTarget)) {
+        appendLog(`Icon extract skipped: shortcut icon target missing path=${nativeIconTarget}`);
+        return null;
+      }
+      const icon = await app.getFileIcon(nativeIconTarget, { size: "normal" });
+      const dataUrl = nativeImageToDataUrl(icon);
+      if (dataUrl) {
+        appendLog(`Icon extract shortcut success: ${nativeTarget} -> ${nativeIconTarget}`);
+        return dataUrl;
+      }
+    } catch {
+      appendLog(`Icon extract failed: readShortcutLink error path=${nativeTarget}`);
+    }
+  }
+
+  try {
+    const icon = await app.getFileIcon(nativeTarget, { size: "normal" });
+    const dataUrl = nativeImageToDataUrl(icon);
+    if (dataUrl) {
+      appendLog(`Icon extract success: ${nativeTarget}`);
+      return dataUrl;
+    }
+  } catch {
+    appendLog(`Icon extract failed: app.getFileIcon error path=${nativeTarget}`);
+  }
+
+  return null;
 }
 
 function resolveRendererAssetPath(assetPath: string | undefined): string | undefined {
@@ -673,7 +769,7 @@ function normalizeRendererAssetForStorage(assetPath: string | undefined): string
   }
 }
 
-function saveConfig(input: unknown): SaveConfigResult {
+async function saveConfig(input: unknown): Promise<SaveConfigResult> {
   const normalizedInput =
     typeof input === "object" && input !== null
       ? {
@@ -706,8 +802,23 @@ function saveConfig(input: unknown): SaveConfigResult {
   }
 
   try {
+    const enrichedItems = await Promise.all(
+      schemaResult.data.items.map(async (item) => {
+        if (!shouldResolveFileIcon(item.target, item.icon)) {
+          return item;
+        }
+        const resolvedIcon = await resolveFileIconDataUrl(item.target);
+        if (!resolvedIcon) {
+          return item;
+        }
+        return {
+          ...item,
+          icon: resolvedIcon,
+        };
+      }),
+    );
     const configPath = getWritableConfigPath();
-    writeConfigToPath(configPath, schemaResult.data);
+    writeConfigToPath(configPath, { ...schemaResult.data, items: enrichedItems });
   } catch (error) {
     return configError(
       "CONFIG_WRITE_FAILED",
@@ -1039,7 +1150,7 @@ function clearWidgetSizePersistTimer(): void {
   widgetSizePersistTimer = null;
 }
 
-function persistWidgetSize(width: number, height: number, trigger: string): void {
+async function persistWidgetSize(width: number, height: number, trigger: string): Promise<void> {
   const normalizedWidth = Math.max(1, Math.round(width));
   const normalizedHeight = Math.max(MIN_WIDGET_HEIGHT_PX, Math.round(height));
 
@@ -1071,7 +1182,7 @@ function persistWidgetSize(width: number, height: number, trigger: string): void
     return;
   }
 
-  const saveResult = saveConfig({
+  const saveResult = await saveConfig({
     ...currentConfig,
     app: {
       ...currentConfig.app,
