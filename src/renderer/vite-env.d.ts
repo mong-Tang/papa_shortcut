@@ -2,6 +2,7 @@
 
 import type {
   ApiResult,
+  FolderImportScanResult,
   LaunchResult,
   LauncherConfig,
   ReloadResult,
@@ -15,6 +16,7 @@ interface LauncherApi {
   widgetBodyInteracted: () => Promise<void>;
   quit: () => Promise<void>;
   pickLaunchTarget: (targetType: "file" | "folder") => Promise<string | null>;
+  scanFolderImportTargets: (folderPath: string) => Promise<FolderImportScanResult | null>;
   pickItemIconPath: () => Promise<string | null>;
   pickEmptyStateImage: () => Promise<string | null>;
   launchItem: (itemId: string) => Promise<LaunchResult>;

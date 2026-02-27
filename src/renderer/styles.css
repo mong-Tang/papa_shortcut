@@ -85,8 +85,12 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 14px 12px 10px;
+  padding: 14px 14px 10px;
   border-bottom: 1px solid rgba(198, 220, 255, 0.16);
+}
+
+.widget-header > div:first-child {
+  padding-left: 6px;
 }
 
 .widget-header h1 {
@@ -104,20 +108,18 @@ button:disabled {
 .header-actions {
   display: flex;
   gap: 6px;
-  flex: 1;
-  min-width: 0;
-  margin-left: 12px;
+  margin-left: auto;
   flex-wrap: nowrap;
 }
 
 .header-actions > button {
-  min-width: 56px;
-  height: 28px;
+  width: 92px;
+  height: 30px;
+  padding: 0 10px;
 }
 
 .exit-btn {
   margin-left: auto;
-  width: 82px;
   background: linear-gradient(140deg, #a13a4e, #cf556d);
 }
 
@@ -387,6 +389,37 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.modal-warning {
+  background: linear-gradient(180deg, #fff1cf 0%, #ffe7b8 100%);
+  border-color: #d8a94a;
+  color: #3f2e0d;
+}
+
+.modal-warning h2,
+.modal-warning p {
+  color: #3f2e0d;
+}
+
+.modal-warning code {
+  background: #fff4da;
+  border: 1px solid #dfba6c;
+  color: #4f3a11;
+}
+
+.modal-warning .editor-footer button:first-child {
+  background: #f2d79a;
+  color: #3f2e0d;
+}
+
+.modal-warning .editor-footer button:last-child {
+  background: linear-gradient(140deg, #d79a2d, #c9871a);
+  color: #fff8ea;
+}
+
+.modal-warning .editor-footer button:last-child:hover {
+  background: linear-gradient(140deg, #c8881f, #b87812);
+}
+
 .classify-modal {
   width: min(420px, 92vw);
 }
@@ -404,6 +437,10 @@ button:disabled {
   overflow: hidden;
 }
 
+.editor-modal.is-folder-drop-active {
+  box-shadow: 0 0 0 2px rgba(95, 161, 255, 0.78), 0 18px 46px rgba(0, 0, 0, 0.5);
+}
+
 .editor-modal header h2 {
   margin: 0;
 }
@@ -413,6 +450,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 260px 1fr;
   gap: 12px;
+  overflow: hidden;
 }
 
 .editor-list {
@@ -420,8 +458,9 @@ button:disabled {
   border-radius: 10px;
   background: rgba(6, 14, 28, 0.85);
   padding: 10px;
+  min-height: 0;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   gap: 8px;
 }
 
@@ -456,9 +495,39 @@ button:disabled {
   min-width: 0;
 }
 
+.editor-category-danger {
+  width: 100%;
+  min-height: 36px;
+}
+
+.editor-drop-hint {
+  border: 1px dashed rgba(189, 212, 255, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: rgba(223, 234, 255, 0.72);
+  background: rgba(12, 24, 46, 0.45);
+}
+
+.editor-drop-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.editor-drop-hint.is-active {
+  border-color: rgba(102, 170, 255, 0.9);
+  color: #e8f2ff;
+  background: rgba(44, 96, 178, 0.35);
+}
+
 .editor-list-items {
+  min-height: 0;
   overflow-y: auto;
   display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: 6px;
 }
 
@@ -469,6 +538,28 @@ button:disabled {
   text-align: center;
   color: rgba(223, 234, 255, 0.74);
   font-size: 12px;
+}
+
+.editor-guide {
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.editor-guide strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: rgba(234, 241, 255, 0.92);
+}
+
+.editor-guide ol {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.editor-guide li {
+  margin: 2px 0;
 }
 
 .rename-modal {
@@ -508,6 +599,10 @@ button:disabled {
   text-align: left;
   border: 1px solid rgba(189, 212, 255, 0.2);
   background: rgba(19, 36, 67, 0.85);
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  align-items: center;
 }
 
 .editor-item-row.is-selected {
@@ -515,11 +610,42 @@ button:disabled {
   box-shadow: 0 0 0 2px rgba(91, 145, 255, 0.34);
 }
 
+.editor-item-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgba(57, 94, 160, 0.35);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.editor-item-icon img {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.editor-item-icon span {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  background: rgba(181, 205, 255, 0.45);
+}
+
+.editor-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .editor-form {
   border: 1px solid rgba(189, 212, 255, 0.2);
   border-radius: 10px;
   background: rgba(6, 14, 28, 0.85);
   padding: 12px;
+  min-height: 0;
   overflow-y: auto;
   display: grid;
   gap: 10px;
@@ -545,6 +671,7 @@ button:disabled {
   color: #ebf0ff;
   padding: 0 10px;
 }
+
 
 .editor-input-with-action {
   display: grid;
@@ -592,5 +719,6 @@ button:disabled {
 
   .editor-body {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(260px, 48vh) minmax(0, 1fr);
   }
 }

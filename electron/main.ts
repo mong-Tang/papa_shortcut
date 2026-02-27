@@ -12,6 +12,8 @@ import {
 import type {
   ApiResult,
   ErrResult,
+  FolderImportCandidate,
+  FolderImportScanResult,
   LaunchResult,
   LauncherConfig,
   LauncherItem,
@@ -21,6 +23,31 @@ import type {
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const EXECUTABLE_EXTENSIONS = new Set([".exe", ".bat", ".cmd", ".com"]);
+const EXTENSION_ICON_CABINET: Record<string, string> = {
+  ".txt": "assets/icons/text-file.svg",
+  ".md": "assets/icons/text-file.svg",
+  ".json": "assets/icons/text-file.svg",
+  ".log": "assets/icons/text-file.svg",
+  ".ini": "assets/icons/text-file.svg",
+  ".csv": "assets/icons/text-file.svg",
+  ".html": "assets/icons/web.svg",
+  ".htm": "assets/icons/web.svg",
+  ".url": "assets/icons/web.svg",
+  ".pdf": "assets/icons/text-file.svg",
+  ".doc": "assets/icons/text-file.svg",
+  ".docx": "assets/icons/text-file.svg",
+  ".xls": "assets/icons/text-file.svg",
+  ".xlsx": "assets/icons/text-file.svg",
+  ".ppt": "assets/icons/text-file.svg",
+  ".pptx": "assets/icons/text-file.svg",
+  ".zip": "assets/icons/folder.svg",
+  ".7z": "assets/icons/folder.svg",
+  ".rar": "assets/icons/folder.svg",
+  ".exe": "assets/icons/game.svg",
+  ".lnk": "assets/icons/game.svg",
+  ".bat": "assets/icons/game.svg",
+  ".cmd": "assets/icons/game.svg",
+};
 const SMOKE_LAUNCH_ARG_PREFIX = "--smoke-launch-item=";
 const SMOKE_ENTER_ARG_PREFIX = "--smoke-enter-item=";
 const LOCAL_STORAGE_ROOT_DIR = "papa-launcher";
@@ -303,17 +330,132 @@ function getDefaultIconAssetPathForTarget(target: string): string | undefined {
   if (!normalizedTarget) {
     return undefined;
   }
-  if (/^(https?:\/\/|file:\/\/|data:)/i.test(normalizedTarget)) {
+  if (/^https?:\/\//i.test(normalizedTarget)) {
+    return "assets/icons/web.svg";
+  }
+  if (/^data:/i.test(normalizedTarget)) {
+    return undefined;
+  }
+  if (/^file:\/\//i.test(normalizedTarget)) {
     return undefined;
   }
 
   const targetWithoutQuery = normalizedTarget.split(/[?#]/, 1)[0];
   const extension = path.extname(targetWithoutQuery).toLowerCase();
-  if (extension === ".txt") {
-    return "assets/icons/text-file.svg";
+  const cabinetIconPath = EXTENSION_ICON_CABINET[extension];
+  if (cabinetIconPath) {
+    return cabinetIconPath;
+  }
+  if (!extension) {
+    try {
+      if (path.isAbsolute(targetWithoutQuery) && fs.existsSync(targetWithoutQuery)) {
+        const stat = fs.statSync(targetWithoutQuery);
+        if (stat.isDirectory()) {
+          return "assets/icons/folder.svg";
+        }
+      }
+    } catch {
+      // Ignore icon fallback errors.
+    }
   }
 
   return undefined;
+}
+
+function inferItemNameFromTarget(targetPath: string): string {
+  const normalizedTarget = normalizePathToPosix(targetPath);
+  const fileName = normalizedTarget.split("/").filter(Boolean).pop() ?? "";
+  if (!fileName) {
+    return "New Item";
+  }
+  const nameWithoutExtension = fileName.replace(/\.[^.]+$/, "");
+  return nameWithoutExtension || fileName;
+}
+
+function getFolderImportCategoryLabel(rootPath: string, fullPath: string): string {
+  const rootLabel = path.basename(rootPath).trim() || "Imported";
+  const parentDirectory = path.dirname(fullPath);
+  const parentLabel = path.basename(parentDirectory).trim();
+  if (!parentLabel) {
+    return rootLabel;
+  }
+  return parentLabel;
+}
+
+function scanFolderImportTargets(folderPath: string): FolderImportScanResult | null {
+  const normalizedInput = folderPath.trim();
+  if (!normalizedInput) {
+    return null;
+  }
+
+  const absoluteRoot = path.resolve(normalizedInput);
+  try {
+    const rootStat = fs.statSync(absoluteRoot);
+    if (!rootStat.isDirectory()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  const MAX_ENTRIES = 3000;
+  const directoryQueue: string[] = [absoluteRoot];
+  const entries: FolderImportCandidate[] = [];
+  let scannedDirectoryCount = 0;
+  let truncated = false;
+
+  while (directoryQueue.length > 0) {
+    const currentDirectory = directoryQueue.shift();
+    if (!currentDirectory) {
+      continue;
+    }
+    scannedDirectoryCount += 1;
+
+    let directoryEntries: fs.Dirent[] = [];
+    try {
+      directoryEntries = fs.readdirSync(currentDirectory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const directoryEntry of directoryEntries) {
+      const absoluteEntryPath = path.join(currentDirectory, directoryEntry.name);
+
+      if (directoryEntry.isDirectory()) {
+        directoryQueue.push(absoluteEntryPath);
+        continue;
+      }
+
+      if (!directoryEntry.isFile()) {
+        continue;
+      }
+
+      const normalizedTarget = normalizePathToPosix(absoluteEntryPath);
+      entries.push({
+        target: normalizedTarget,
+        name: inferItemNameFromTarget(normalizedTarget),
+        categoryLabel: getFolderImportCategoryLabel(absoluteRoot, absoluteEntryPath),
+        workingDir: normalizePathToPosix(path.dirname(absoluteEntryPath)),
+        icon: getDefaultIconAssetPathForTarget(normalizedTarget),
+      });
+
+      if (entries.length >= MAX_ENTRIES) {
+        truncated = true;
+        break;
+      }
+    }
+
+    if (truncated) {
+      break;
+    }
+  }
+
+  return {
+    rootPath: normalizePathToPosix(absoluteRoot),
+    entries,
+    scannedDirectoryCount,
+    truncated,
+  };
 }
 
 function toRendererConfig(config: LauncherConfig): LauncherConfig {
@@ -1862,6 +2004,26 @@ ipcMain.handle(
     appendLog(`Pick launch target failed: ${formatUnknownError(error)}`);
     return null;
   }
+  },
+);
+
+ipcMain.handle(
+  "launcher:scanFolderImportTargets",
+  async (_event, folderPath: string): Promise<FolderImportScanResult | null> => {
+    try {
+      const result = scanFolderImportTargets(folderPath);
+      if (!result) {
+        appendLog(`Scan folder import targets failed path=${folderPath} reason=invalid-folder`);
+        return null;
+      }
+      appendLog(
+        `Scan folder import targets success path=${result.rootPath} entries=${result.entries.length} dirs=${result.scannedDirectoryCount} truncated=${String(result.truncated)}`,
+      );
+      return result;
+    } catch (error) {
+      appendLog(`Scan folder import targets failed: ${formatUnknownError(error)}`);
+      return null;
+    }
   },
 );
 

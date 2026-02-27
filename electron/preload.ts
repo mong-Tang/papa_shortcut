@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   ApiResult,
+  FolderImportScanResult,
   LaunchResult,
   LauncherConfig,
   ReloadResult,
@@ -25,6 +26,9 @@ const launcherApi = {
   },
   pickLaunchTarget: (targetType: "file" | "folder"): Promise<string | null> => {
     return ipcRenderer.invoke("launcher:pickLaunchTarget", targetType);
+  },
+  scanFolderImportTargets: (folderPath: string): Promise<FolderImportScanResult | null> => {
+    return ipcRenderer.invoke("launcher:scanFolderImportTargets", folderPath);
   },
   pickItemIconPath: (): Promise<string | null> => {
     return ipcRenderer.invoke("launcher:pickItemIconPath");

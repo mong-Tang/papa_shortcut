@@ -95,3 +95,18 @@ export type LaunchResult = LaunchSuccess | LaunchFailure;
 
 export type ReloadResult = ApiResult<LauncherConfig>;
 export type SaveConfigResult = ApiResult<LauncherConfig>;
+
+export interface FolderImportCandidate {
+  target: string;
+  name: string;
+  categoryLabel: string;
+  workingDir?: string;
+  icon?: string;
+}
+
+export interface FolderImportScanResult {
+  rootPath: string;
+  entries: FolderImportCandidate[];
+  scannedDirectoryCount: number;
+  truncated: boolean;
+}

@@ -1,10 +1,18 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
-import type { ApiResult, LauncherCategory, LauncherConfig, LauncherItem } from "@shared/types";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import type {
+  ApiResult,
+  FolderImportCandidate,
+  FolderImportScanResult,
+  LauncherCategory,
+  LauncherConfig,
+  LauncherItem,
+} from "@shared/types";
 
 interface ErrorModal {
   title: string;
   message: string;
   details?: string;
+  severity?: "error" | "warning";
 }
 
 interface CategoryChip {
@@ -19,14 +27,35 @@ interface NewItemDraft {
   workingDir?: string;
 }
 
+interface FolderImportPrepared {
+  nextCategories: LauncherCategory[];
+  nextItems: LauncherItem[];
+  addedItemCount: number;
+  skippedDuplicateCount: number;
+  addedCategoryCount: number;
+  firstImportedCategoryId: string | null;
+}
+
+interface FolderImportPending {
+  scanResult: FolderImportScanResult;
+  prepared: FolderImportPrepared;
+  source: "picker" | "drop";
+}
+
+interface DeleteCategoryConfirm {
+  id: string;
+  label: string;
+  itemCount: number;
+}
+
 type CoreCategoryId = "document" | "game" | "web" | "tool";
 
 const ALL_FILTER_ID = "__all__";
 const CORE_CATEGORY_DEFAULT_LABELS: Record<CoreCategoryId, string> = {
-  document: "문서",
-  game: "게임",
-  web: "웹",
-  tool: "도구",
+  document: "Document",
+  game: "Game",
+  web: "Web",
+  tool: "Tool",
 };
 const CORE_CATEGORY_ORDER: CoreCategoryId[] = ["document", "game", "web", "tool"];
 const MAIN_CATEGORY_CHIPS: CategoryChip[] = CORE_CATEGORY_ORDER.map((id) => ({
@@ -34,10 +63,14 @@ const MAIN_CATEGORY_CHIPS: CategoryChip[] = CORE_CATEGORY_ORDER.map((id) => ({
   label: CORE_CATEGORY_DEFAULT_LABELS[id],
   kind: "main",
 }));
-const ALL_CATEGORY_CHIP: CategoryChip = { id: ALL_FILTER_ID, label: "전체", kind: "all" };
+const ALL_CATEGORY_CHIP: CategoryChip = { id: ALL_FILTER_ID, label: "All", kind: "all" };
 
 function normalizeText(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function isProtectedCategoryId(categoryId: string): boolean {
+  return categoryId === "all" || toCoreCategoryId(categoryId) !== null;
 }
 
 function isImageLikePath(value: string): boolean {
@@ -186,6 +219,10 @@ function inferWorkingDirFromTarget(target: string): string | undefined {
   return normalizedTarget.slice(0, lastSeparatorIndex);
 }
 
+function normalizeTargetForComparison(target: string): string {
+  return target.replace(/\\/g, "/").trim().toLowerCase();
+}
+
 function cloneItems(items: LauncherItem[]): LauncherItem[] {
   return items.map((item) => ({
     ...item,
@@ -303,8 +340,11 @@ export default function App(): JSX.Element {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<LauncherItem | null>(null);
+  const [deleteConfirmCategory, setDeleteConfirmCategory] = useState<DeleteCategoryConfirm | null>(null);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameSaving, setRenameSaving] = useState(false);
+  const [folderImportDragActive, setFolderImportDragActive] = useState(false);
+  const [folderImportPending, setFolderImportPending] = useState<FolderImportPending | null>(null);
   const [renameDraftLabels, setRenameDraftLabels] = useState<Record<CoreCategoryId, string>>({
     ...CORE_CATEGORY_DEFAULT_LABELS,
   });
@@ -355,8 +395,17 @@ export default function App(): JSX.Element {
     () => hasPickedEditorCategory || editorSelectedCategory !== null,
     [hasPickedEditorCategory, editorSelectedCategory],
   );
+  const canDeleteEditorCategory = useMemo(() => {
+    if (!editorCategoryId || !config) {
+      return false;
+    }
+    if (isProtectedCategoryId(editorCategoryId)) {
+      return false;
+    }
+    return config.categories.some((category) => category.id === editorCategoryId);
+  }, [config, editorCategoryId]);
   const primaryAddButtonLabel = useMemo(
-    () => (editorCategoryId ? "Add Item" : "\uCE74\uD14C\uACE0\uB9AC \uCD94\uAC00"),
+    () => (editorCategoryId ? "Add Item" : "Import Folder"),
     [editorCategoryId],
   );
   const emptyStateImageSrc = useMemo(
@@ -610,7 +659,10 @@ export default function App(): JSX.Element {
     setEditorCategoryId(null);
     setEditingItemId(null);
     setDeleteConfirmItem(null);
+    setDeleteConfirmCategory(null);
     setRenameModalOpen(false);
+    setFolderImportDragActive(false);
+    setFolderImportPending(null);
   }
 
   async function closeEditorAndFlush(): Promise<void> {
@@ -655,25 +707,139 @@ export default function App(): JSX.Element {
     return candidate;
   }
 
-  async function addCategoryFromFolder(): Promise<void> {
+  function toUniqueItemId(baseName: string, usedIds: Set<string>): string {
+    const normalizedBase = toCategoryIdCandidate(baseName) || `item-${Date.now()}`;
+    let candidate = normalizedBase;
+    let suffix = 2;
+    while (usedIds.has(candidate)) {
+      candidate = `${normalizedBase}-${suffix}`;
+      suffix += 1;
+    }
+    usedIds.add(candidate);
+    return candidate;
+  }
+
+  function prepareFolderImport(
+    sourceConfig: LauncherConfig,
+    candidates: FolderImportCandidate[],
+  ): FolderImportPrepared {
+    const nextCategories = [...sourceConfig.categories];
+    const nextItems = cloneItems(sourceConfig.items);
+    const existingTargets = new Set(
+      sourceConfig.items.map((item) => normalizeTargetForComparison(item.target)),
+    );
+    const usedItemIds = new Set(sourceConfig.items.map((item) => item.id));
+    const categoryIdByNormalizedLabel = new Map<string, string>();
+    for (const category of nextCategories) {
+      categoryIdByNormalizedLabel.set(normalizeText(category.label), category.id);
+    }
+
+    let addedItemCount = 0;
+    let skippedDuplicateCount = 0;
+    let addedCategoryCount = 0;
+    let firstImportedCategoryId: string | null = null;
+
+    for (const candidate of candidates) {
+      const normalizedTarget = normalizeTargetForComparison(candidate.target);
+      if (!normalizedTarget || existingTargets.has(normalizedTarget)) {
+        skippedDuplicateCount += 1;
+        continue;
+      }
+
+      const rawLabel = candidate.categoryLabel.trim() || "Imported";
+      const normalizedLabel = normalizeText(rawLabel);
+      let categoryId = categoryIdByNormalizedLabel.get(normalizedLabel);
+      if (!categoryId) {
+        categoryId = toUniqueCategoryId(rawLabel, nextCategories);
+        nextCategories.push({ id: categoryId, label: rawLabel });
+        categoryIdByNormalizedLabel.set(normalizedLabel, categoryId);
+        addedCategoryCount += 1;
+      }
+      if (!firstImportedCategoryId) {
+        firstImportedCategoryId = categoryId;
+      }
+
+      const itemName = candidate.name.trim() || inferItemNameFromTarget(candidate.target);
+      const itemId = toUniqueItemId(itemName, usedItemIds);
+      nextItems.push(
+        normalizeItem({
+          id: itemId,
+          name: itemName,
+          categoryId,
+          target: candidate.target.trim(),
+          workingDir: candidate.workingDir?.trim() || inferWorkingDirFromTarget(candidate.target),
+          icon: candidate.icon?.trim() || (isImageLikePath(candidate.target) ? candidate.target : undefined),
+        }),
+      );
+      existingTargets.add(normalizedTarget);
+      addedItemCount += 1;
+    }
+
+    return {
+      nextCategories,
+      nextItems,
+      addedItemCount,
+      skippedDuplicateCount,
+      addedCategoryCount,
+      firstImportedCategoryId,
+    };
+  }
+
+  async function importItemsFromFolderPath(folderPath: string, source: "picker" | "drop"): Promise<void> {
     if (!config) {
       return;
     }
 
-    const selectedFolder = await window.launcherApi.pickLaunchTarget("folder");
-    if (!selectedFolder) {
+    const scanResult = await window.launcherApi.scanFolderImportTargets(folderPath);
+    if (!scanResult) {
+      setErrorModal({
+        title: "Folder Import Failed",
+        message: "Folder scan failed. Please verify the folder path and try again.",
+      });
       return;
     }
 
-    const normalizedPath = selectedFolder.replace(/\\/g, "/");
-    const folderName = normalizedPath.split("/").filter(Boolean).pop() ?? "";
-    const categoryLabel = folderName.trim() || "New Category";
-    const categoryId = toUniqueCategoryId(categoryLabel, config.categories);
+    const prepared = prepareFolderImport(config, scanResult.entries);
+    if (prepared.addedItemCount === 0) {
+      const duplicateMessage = `No new items were added. Skipped duplicates: ${prepared.skippedDuplicateCount}.`;
+      setStatusText(
+        duplicateMessage,
+      );
+      setErrorModal({
+        title: "Folder Import",
+        message: duplicateMessage,
+        severity: "warning",
+      });
+      return;
+    }
 
+    const validationError = validateItems(prepared.nextItems, prepared.nextCategories);
+    if (validationError) {
+      setErrorModal({
+        title: "Folder Import Failed",
+        message: validationError,
+      });
+      return;
+    }
+
+    setFolderImportPending({
+      scanResult,
+      prepared,
+      source,
+    });
+  }
+
+  async function applyPendingFolderImport(): Promise<void> {
+    if (!config || !folderImportPending) {
+      return;
+    }
+
+    const { prepared, scanResult, source } = folderImportPending;
     setEditorSaving(true);
     const result = await window.launcherApi.saveConfig({
       ...config,
-      categories: [...config.categories, { id: categoryId, label: categoryLabel }],
+      categories: prepared.nextCategories,
+      items: prepared.nextItems,
     });
     setEditorSaving(false);
 
@@ -686,9 +852,70 @@ export default function App(): JSX.Element {
       return;
     }
 
-    setConfig(result.data);
-    syncEditorCategoryItems(result.data, categoryId);
-    setStatusText(`Added category '${categoryLabel}'.`);
+    const savedConfig = ensureCoreCategories(result.data);
+    setFolderImportPending(null);
+    setConfig(savedConfig);
+    if (prepared.firstImportedCategoryId) {
+      syncEditorCategoryItems(savedConfig, prepared.firstImportedCategoryId);
+    }
+    setStatusText(
+      [
+        `Folder import completed (${source === "drop" ? "drop" : "picker"})`,
+        `Added ${prepared.addedItemCount}`,
+        `Skipped duplicates ${prepared.skippedDuplicateCount}`,
+        `New categories ${prepared.addedCategoryCount}`,
+        scanResult.truncated ? "Partial import only" : "",
+      ]
+        .filter(Boolean)
+        .join(" / "),
+    );
+  }
+
+  async function addCategoryFromFolder(): Promise<void> {
+    const selectedFolder = await window.launcherApi.pickLaunchTarget("folder");
+    if (!selectedFolder) {
+      return;
+    }
+    await importItemsFromFolderPath(selectedFolder, "picker");
+  }
+
+  function getDroppedFolderPath(event: DragEvent<HTMLElement>): string | null {
+    const droppedFiles = event.dataTransfer?.files;
+    if (!droppedFiles || droppedFiles.length === 0) {
+      return null;
+    }
+    const rawPath = (droppedFiles[0] as File & { path?: string }).path;
+    if (!rawPath || rawPath.trim().length === 0) {
+      return null;
+    }
+    return rawPath;
+  }
+
+  async function onEditorFolderDrop(event: DragEvent<HTMLElement>): Promise<void> {
+    event.preventDefault();
+    setFolderImportDragActive(false);
+    if (editorSaving || renameSaving || folderImportPending) {
+      return;
+    }
+    const droppedPath = getDroppedFolderPath(event);
+    if (!droppedPath) {
+      return;
+    }
+    await importItemsFromFolderPath(droppedPath, "drop");
+  }
+
+  function onEditorFolderDragOver(event: DragEvent<HTMLElement>): void {
+    event.preventDefault();
+    if (!folderImportDragActive) {
+      setFolderImportDragActive(true);
+    }
+  }
+
+  function onEditorFolderDragLeave(event: DragEvent<HTMLElement>): void {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+    setFolderImportDragActive(false);
   }
 
   async function createEditorItem(): Promise<void> {
@@ -861,6 +1088,71 @@ export default function App(): JSX.Element {
     }
     deleteItemById(deleteConfirmItem.id);
     setDeleteConfirmItem(null);
+  }
+
+  function onDeleteEditorCategory(): void {
+    if (!config || !editorCategoryId) {
+      return;
+    }
+    if (isProtectedCategoryId(editorCategoryId)) {
+      setErrorModal({
+        title: "Delete Category",
+        message: "Core category cannot be deleted.",
+      });
+      return;
+    }
+    const targetCategory = config.categories.find((category) => category.id === editorCategoryId);
+    if (!targetCategory) {
+      return;
+    }
+    if (editorDirty) {
+      const proceed = window.confirm(
+        "Unsaved item changes in this category will be discarded before category deletion. Continue?",
+      );
+      if (!proceed) {
+        return;
+      }
+    }
+    const itemCount = config.items.filter((item) => item.categoryId === editorCategoryId).length;
+    setDeleteConfirmCategory({
+      id: editorCategoryId,
+      label: targetCategory.label,
+      itemCount,
+    });
+  }
+
+  async function confirmDeleteEditorCategory(): Promise<void> {
+    if (!config || !deleteConfirmCategory) {
+      return;
+    }
+
+    const nextCategories = config.categories.filter((category) => category.id !== deleteConfirmCategory.id);
+    const nextItems = config.items.filter((item) => item.categoryId !== deleteConfirmCategory.id);
+
+    setEditorSaving(true);
+    const result = await window.launcherApi.saveConfig({
+      ...config,
+      categories: nextCategories,
+      items: nextItems,
+    });
+    setEditorSaving(false);
+
+    if (!result.ok) {
+      setErrorModal({
+        title: "Delete Category Failed",
+        message: result.error.message,
+        details: result.error.details,
+      });
+      return;
+    }
+
+    const savedConfig = ensureCoreCategories(result.data);
+    setDeleteConfirmCategory(null);
+    setConfig(savedConfig);
+    syncEditorCategoryItems(savedConfig, null);
+    setStatusText(
+      `Deleted category '${deleteConfirmCategory.label}' (removed ${deleteConfirmCategory.itemCount} items).`,
+    );
   }
 
   async function saveEditorItems(options?: { silent?: boolean }): Promise<boolean> {
@@ -1066,7 +1358,7 @@ export default function App(): JSX.Element {
     if (!editorOpen || !editorCategoryId || !editorDirty || editorSaving) {
       return;
     }
-    if (renameModalOpen || deleteConfirmItem) {
+    if (renameModalOpen || deleteConfirmItem || deleteConfirmCategory) {
       return;
     }
 
@@ -1083,6 +1375,7 @@ export default function App(): JSX.Element {
     editorSaving,
     renameModalOpen,
     deleteConfirmItem,
+    deleteConfirmCategory,
   ]);
 
   useEffect(() => {
@@ -1112,6 +1405,14 @@ export default function App(): JSX.Element {
         if (deleteConfirmItem) {
           if (event.key === "Escape") {
             setDeleteConfirmItem(null);
+            event.preventDefault();
+          }
+          return;
+        }
+
+        if (deleteConfirmCategory) {
+          if (event.key === "Escape") {
+            setDeleteConfirmCategory(null);
             event.preventDefault();
           }
           return;
@@ -1186,6 +1487,7 @@ export default function App(): JSX.Element {
     selectedItem,
     editorOpen,
     deleteConfirmItem,
+    deleteConfirmCategory,
     renameModalOpen,
     errorModal,
     emptyStateMenuPosition,
@@ -1227,7 +1529,7 @@ export default function App(): JSX.Element {
           </div>
           <div className="header-actions">
             <button type="button" onClick={openEditor}>
-              Add
+              Add / Edit
             </button>
             <button type="button" onClick={() => void loadConfig(true)}>
               Reload
@@ -1279,7 +1581,7 @@ export default function App(): JSX.Element {
                 setSelectedCategoryId(nextCategoryId.length > 0 ? nextCategoryId : null);
               }}
             >
-              <option value="">추가 카테고리 선택...</option>
+              <option value="">Select additional category...</option>
               {extraCategories.map((category) => (
                 <option key={category.id} value={category.id}>
                   {category.label}
@@ -1303,10 +1605,10 @@ export default function App(): JSX.Element {
               {emptyStateImageSrc ? (
                 <img src={emptyStateImageSrc} alt="Empty state" />
               ) : (
-                <div className="empty-state-placeholder">배경 그림이 없습니다.</div>
+                <div className="empty-state-placeholder">No background image selected.</div>
               )}
               <div className="empty-state-caption">
-                카테고리를 선택하세요. 우클릭으로 배경 그림을 변경할 수 있습니다.
+                Select a category. Right-click to change the background image.
               </div>
             </div>
           ) : (
@@ -1383,7 +1685,7 @@ export default function App(): JSX.Element {
             onClick={(event) => event.stopPropagation()}
           >
             <button type="button" onClick={() => void pickEmptyStateImage()} disabled={emptyStateImageSaving}>
-              {emptyStateImageSaving ? "저장 중..." : "배경 그림 선택..."}
+              {emptyStateImageSaving ? "Saving..." : "Select background image..."}
             </button>
           </div>
         </div>
@@ -1391,7 +1693,14 @@ export default function App(): JSX.Element {
 
       {editorOpen && (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal editor-modal" role="dialog" aria-modal="true">
+          <section
+            className={`modal editor-modal ${folderImportDragActive ? "is-folder-drop-active" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            onDragOver={onEditorFolderDragOver}
+            onDragLeave={onEditorFolderDragLeave}
+            onDrop={(event) => void onEditorFolderDrop(event)}
+          >
             <header>
               <h2>Item Add/Edit</h2>
             </header>
@@ -1435,7 +1744,7 @@ export default function App(): JSX.Element {
                       shouldDisableRenameButton
                     }
                   >
-                    버튼 리네임
+                    Rename Buttons
                   </button>
                   <button
                     type="button"
@@ -1451,10 +1760,28 @@ export default function App(): JSX.Element {
                     Delete Item
                   </button>
                 </div>
+                <div className="editor-drop-row">
+                  <div className={`editor-drop-hint ${folderImportDragActive ? "is-active" : ""}`}>
+                    Drop a folder here to bulk import nested files.
+                  </div>
+                  <button
+                    type="button"
+                    className="editor-close-btn"
+                    onClick={() => void closeEditorAndFlush()}
+                    disabled={editorSaving}
+                  >
+                    Close
+                  </button>
+                </div>
                 <div className="editor-list-items">
                   {!editorCategoryId && (
-                    <div className="editor-list-placeholder">
-                      Select a category to load items.
+                    <div className="editor-list-placeholder editor-guide">
+                      <strong>User Guide</strong>
+                      <ol>
+                        <li>Select a category from the dropdown above.</li>
+                        <li>Use Import Folder to bulk add files.</li>
+                        <li>Select an item to edit details on the right.</li>
+                      </ol>
                     </div>
                   )}
                   {editorCategoryId && editorItems.length === 0 && (
@@ -1470,14 +1797,31 @@ export default function App(): JSX.Element {
                         className={`editor-item-row ${item.id === editingItemId ? "is-selected" : ""}`}
                         onClick={() => setEditingItemId(item.id)}
                       >
-                        {item.name}
+                        <span className="editor-item-icon" aria-hidden="true">
+                          {getIconSrc(item.icon) ? (
+                            <img src={getIconSrc(item.icon)} alt="" />
+                          ) : (
+                            <span />
+                          )}
+                        </span>
+                        <span className="editor-item-name">{item.name}</span>
                       </button>
                     ))}
                 </div>
+                {canDeleteEditorCategory && (
+                  <button
+                    type="button"
+                    className="danger editor-category-danger"
+                    onClick={onDeleteEditorCategory}
+                    disabled={editorSaving || renameSaving}
+                  >
+                    Delete Category
+                  </button>
+                )}
               </aside>
 
               <section className="editor-form">
-                {!editorCategoryId && <p>Select a category first.</p>}
+                {!editorCategoryId && null}
                 {editorCategoryId && !editingItem && <p>Select an item.</p>}
                 {editorCategoryId && editingItem && (
                   <>
@@ -1558,16 +1902,6 @@ export default function App(): JSX.Element {
               </section>
             </div>
 
-            <footer className="editor-footer">
-              <button
-                type="button"
-                onClick={() => void closeEditorAndFlush()}
-                className="editor-close-btn"
-                disabled={editorSaving}
-              >
-                닫기
-              </button>
-            </footer>
           </section>
         </div>
       )}
@@ -1577,9 +1911,9 @@ export default function App(): JSX.Element {
         <div className="modal-backdrop" role="presentation">
           <section className="modal rename-modal" role="dialog" aria-modal="true">
             <header>
-              <h2>버튼 리네임</h2>
+              <h2>Rename Buttons</h2>
             </header>
-            <p>문서/게임/웹/도구 버튼의 표시 이름을 설정합니다.</p>
+            <p>Set display labels for the four main category buttons.</p>
             <div className="rename-form">
               {CORE_CATEGORY_ORDER.map((id) => (
                 <label key={id}>
@@ -1602,10 +1936,42 @@ export default function App(): JSX.Element {
             </div>
             <footer className="editor-footer">
               <button type="button" onClick={closeRenameModal} disabled={renameSaving}>
-                취소
+                Cancel
               </button>
               <button type="button" onClick={() => void saveRenamedCategoryLabels()} disabled={renameSaving}>
-                {renameSaving ? "저장 중..." : "저장"}
+                {renameSaving ? "Saving..." : "Save"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {folderImportPending && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal modal-warning" role="dialog" aria-modal="true">
+            <h2>Confirm Folder Import</h2>
+            <p>Proceed with folder bulk import?</p>
+            <code>
+              {[
+                `Scanned folder: ${folderImportPending.scanResult.rootPath}`,
+                `New categories: ${folderImportPending.prepared.addedCategoryCount}`,
+                `New items: ${folderImportPending.prepared.addedItemCount}`,
+                `Skipped duplicates: ${folderImportPending.prepared.skippedDuplicateCount}`,
+                folderImportPending.scanResult.truncated ? "Warning: partial import only." : "",
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            </code>
+            <footer className="editor-footer">
+              <button
+                type="button"
+                onClick={() => setFolderImportPending(null)}
+                disabled={editorSaving}
+              >
+                Cancel
+              </button>
+              <button type="button" onClick={() => void applyPendingFolderImport()} disabled={editorSaving}>
+                {editorSaving ? "Applying..." : "Apply"}
               </button>
             </footer>
           </section>
@@ -1619,10 +1985,34 @@ export default function App(): JSX.Element {
             <p>{`Delete '${deleteConfirmItem.name}' item?`}</p>
             <footer className="editor-footer">
               <button type="button" onClick={() => setDeleteConfirmItem(null)}>
-                취소
+                Cancel
               </button>
               <button type="button" className="danger" onClick={confirmDeleteEditingItem}>
-                삭제
+                Delete
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {deleteConfirmCategory && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal" role="alertdialog" aria-modal="true">
+            <h2>Delete Category</h2>
+            <p>
+              {`Delete category '${deleteConfirmCategory.label}' and remove ${deleteConfirmCategory.itemCount} items?`}
+            </p>
+            <footer className="editor-footer">
+              <button type="button" onClick={() => setDeleteConfirmCategory(null)} disabled={editorSaving}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => void confirmDeleteEditorCategory()}
+                disabled={editorSaving}
+              >
+                {editorSaving ? "Deleting..." : "Delete Category"}
               </button>
             </footer>
           </section>
@@ -1631,7 +2021,11 @@ export default function App(): JSX.Element {
 
       {errorModal && (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="alertdialog" aria-modal="true">
+          <section
+            className={`modal ${errorModal.severity === "warning" ? "modal-warning" : ""}`}
+            role="alertdialog"
+            aria-modal="true"
+          >
             <h2>{errorModal.title}</h2>
             <p>{errorModal.message}</p>
             {errorModal.details && <code>{errorModal.details}</code>}
@@ -1644,3 +2038,5 @@ export default function App(): JSX.Element {
     </main>
   );
 }
+
+
