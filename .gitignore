@@ -4,3 +4,9 @@ dist-electron/
 release/
 *.log
 *.exe
+AGENTS.md
+AGENTS.ko.md
+BOOTSTRAP.md
+PLAN.md
+SESSION_HANDOFF.md
+config/launcher.config.local.json
