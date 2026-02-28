@@ -42,6 +42,11 @@ interface FolderImportPending {
   source: "picker" | "drop";
 }
 
+interface FolderImportStrategyPending {
+  scanResult: FolderImportScanResult;
+  source: "picker" | "drop";
+}
+
 interface DeleteCategoryConfirm {
   id: string;
   label: string;
@@ -345,6 +350,8 @@ export default function App(): JSX.Element {
   const [renameSaving, setRenameSaving] = useState(false);
   const [folderImportDragActive, setFolderImportDragActive] = useState(false);
   const [folderImportPending, setFolderImportPending] = useState<FolderImportPending | null>(null);
+  const [folderImportStrategyPending, setFolderImportStrategyPending] =
+    useState<FolderImportStrategyPending | null>(null);
   const [renameDraftLabels, setRenameDraftLabels] = useState<Record<CoreCategoryId, string>>({
     ...CORE_CATEGORY_DEFAULT_LABELS,
   });
@@ -663,6 +670,7 @@ export default function App(): JSX.Element {
     setRenameModalOpen(false);
     setFolderImportDragActive(false);
     setFolderImportPending(null);
+    setFolderImportStrategyPending(null);
   }
 
   async function closeEditorAndFlush(): Promise<void> {
@@ -785,21 +793,13 @@ export default function App(): JSX.Element {
     };
   }
 
-  async function importItemsFromFolderPath(folderPath: string, source: "picker" | "drop"): Promise<void> {
-    if (!config) {
-      return;
-    }
-
-    const scanResult = await window.launcherApi.scanFolderImportTargets(folderPath);
-    if (!scanResult) {
-      setErrorModal({
-        title: "Folder Import Failed",
-        message: "Folder scan failed. Please verify the folder path and try again.",
-      });
-      return;
-    }
-
-    const prepared = prepareFolderImport(config, scanResult.entries);
+  function stageFolderImport(
+    sourceConfig: LauncherConfig,
+    scanResult: FolderImportScanResult,
+    candidates: FolderImportCandidate[],
+    source: "picker" | "drop",
+  ): void {
+    const prepared = prepareFolderImport(sourceConfig, candidates);
     if (prepared.addedItemCount === 0) {
       const duplicateMessage = `No new items were added. Skipped duplicates: ${prepared.skippedDuplicateCount}.`;
       setStatusText(
@@ -827,6 +827,49 @@ export default function App(): JSX.Element {
       prepared,
       source,
     });
+  }
+
+  async function importItemsFromFolderPath(folderPath: string, source: "picker" | "drop"): Promise<void> {
+    if (!config) {
+      return;
+    }
+
+    const scanResult = await window.launcherApi.scanFolderImportTargets(folderPath);
+    if (!scanResult) {
+      setErrorModal({
+        title: "Folder Import Failed",
+        message: "Folder scan failed. Please verify the folder path and try again.",
+      });
+      return;
+    }
+
+    if (scanResult.nestedDirectoryCount > 0) {
+      setFolderImportStrategyPending({
+        scanResult,
+        source,
+      });
+      return;
+    }
+
+    stageFolderImport(config, scanResult, scanResult.entries, source);
+  }
+
+  function cancelFolderImportStrategy(): void {
+    setFolderImportStrategyPending(null);
+  }
+
+  function chooseFolderImportStrategy(strategy: "top-level-only" | "per-subfolder"): void {
+    if (!config || !folderImportStrategyPending) {
+      return;
+    }
+    const { scanResult, source } = folderImportStrategyPending;
+    setFolderImportStrategyPending(null);
+    stageFolderImport(
+      config,
+      scanResult,
+      strategy === "top-level-only" ? scanResult.topLevelEntries : scanResult.entries,
+      source,
+    );
   }
 
   async function applyPendingFolderImport(): Promise<void> {
@@ -1972,6 +2015,44 @@ export default function App(): JSX.Element {
               </button>
               <button type="button" onClick={() => void applyPendingFolderImport()} disabled={editorSaving}>
                 {editorSaving ? "Applying..." : "Apply"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {folderImportStrategyPending && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal modal-warning classify-modal" role="dialog" aria-modal="true">
+            <h2>Nested Folders Detected</h2>
+            <p>Choose how to import items from nested folders.</p>
+            <code>
+              {[
+                `Scanned folder: ${folderImportStrategyPending.scanResult.rootPath}`,
+                `Top-level files: ${folderImportStrategyPending.scanResult.topLevelEntries.length}`,
+                `Nested folders: ${folderImportStrategyPending.scanResult.nestedDirectoryCount}`,
+                `All discovered items: ${folderImportStrategyPending.scanResult.entries.length}`,
+              ].join("\n")}
+            </code>
+            <div className="classify-actions">
+              <button
+                type="button"
+                onClick={() => chooseFolderImportStrategy("top-level-only")}
+                disabled={editorSaving}
+              >
+                Top-level Only
+              </button>
+              <button
+                type="button"
+                onClick={() => chooseFolderImportStrategy("per-subfolder")}
+                disabled={editorSaving}
+              >
+                Per Subfolder
+              </button>
+            </div>
+            <footer className="editor-footer">
+              <button type="button" onClick={cancelFolderImportStrategy} disabled={editorSaving}>
+                Cancel
               </button>
             </footer>
           </section>

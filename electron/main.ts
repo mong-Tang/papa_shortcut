@@ -509,7 +509,9 @@ function scanFolderImportTargets(folderPath: string): FolderImportScanResult | n
   const MAX_ENTRIES = 3000;
   const directoryQueue: string[] = [absoluteRoot];
   const entries: FolderImportCandidate[] = [];
+  const topLevelEntries: FolderImportCandidate[] = [];
   let scannedDirectoryCount = 0;
+  let nestedDirectoryCount = 0;
   let truncated = false;
 
   while (directoryQueue.length > 0) {
@@ -530,6 +532,9 @@ function scanFolderImportTargets(folderPath: string): FolderImportScanResult | n
       const absoluteEntryPath = path.join(currentDirectory, directoryEntry.name);
 
       if (directoryEntry.isDirectory()) {
+        if (currentDirectory === absoluteRoot) {
+          nestedDirectoryCount += 1;
+        }
         directoryQueue.push(absoluteEntryPath);
         continue;
       }
@@ -546,6 +551,15 @@ function scanFolderImportTargets(folderPath: string): FolderImportScanResult | n
         workingDir: normalizePathToPosix(path.dirname(absoluteEntryPath)),
         icon: getDefaultIconAssetPathForTarget(normalizedTarget),
       });
+      if (currentDirectory === absoluteRoot) {
+        topLevelEntries.push({
+          target: normalizedTarget,
+          name: inferItemNameFromTarget(normalizedTarget),
+          categoryLabel: getFolderImportCategoryLabel(absoluteRoot, absoluteEntryPath),
+          workingDir: normalizePathToPosix(path.dirname(absoluteEntryPath)),
+          icon: getDefaultIconAssetPathForTarget(normalizedTarget),
+        });
+      }
 
       if (entries.length >= MAX_ENTRIES) {
         truncated = true;
@@ -561,7 +575,9 @@ function scanFolderImportTargets(folderPath: string): FolderImportScanResult | n
   return {
     rootPath: normalizePathToPosix(absoluteRoot),
     entries,
+    topLevelEntries,
     scannedDirectoryCount,
+    nestedDirectoryCount,
     truncated,
   };
 }
@@ -2140,7 +2156,7 @@ ipcMain.handle(
         return null;
       }
       appendLog(
-        `Scan folder import targets success path=${result.rootPath} entries=${result.entries.length} dirs=${result.scannedDirectoryCount} truncated=${String(result.truncated)}`,
+        `Scan folder import targets success path=${result.rootPath} entries=${result.entries.length} topLevelEntries=${result.topLevelEntries.length} nestedDirs=${result.nestedDirectoryCount} dirs=${result.scannedDirectoryCount} truncated=${String(result.truncated)}`,
       );
       return result;
     } catch (error) {

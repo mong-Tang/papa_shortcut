@@ -216,7 +216,10 @@ button:disabled {
   height: 28px;
   border-radius: 999px;
   background: rgba(21, 39, 72, 0.72);
-  border: 1px solid rgba(184, 208, 255, 0.2);
+  border: 1px solid rgba(168, 201, 255, 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 0 0 1px rgba(45, 77, 136, 0.18);
   font-size: 11px;
   padding: 0 6px;
 }
@@ -226,8 +229,12 @@ button:disabled {
 }
 
 .chip.is-selected {
-  border-color: rgba(223, 234, 255, 0.78);
+  border-color: rgba(232, 240, 255, 0.92);
   background: linear-gradient(140deg, #346adf, #4b89f8);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 0 0 1px rgba(120, 171, 255, 0.22),
+    0 8px 18px rgba(33, 79, 166, 0.28);
 }
 
 .item-list {
@@ -436,38 +443,40 @@ button:disabled {
   border-radius: 8px;
   background: rgba(17, 30, 56, 0.95);
   color: #ffd2d2;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .modal-warning {
-  background: linear-gradient(180deg, #fff1cf 0%, #ffe7b8 100%);
-  border-color: #d8a94a;
-  color: #3f2e0d;
+  background: linear-gradient(180deg, rgba(20, 33, 58, 0.96) 0%, rgba(13, 24, 44, 0.98) 100%);
+  border-color: rgba(241, 180, 74, 0.68);
+  color: #f6ead2;
+  box-shadow: 0 0 0 1px rgba(241, 180, 74, 0.14), 0 12px 24px rgba(7, 13, 26, 0.52);
 }
 
 .modal-warning h2,
 .modal-warning p {
-  color: #3f2e0d;
+  color: #f6ead2;
 }
 
 .modal-warning code {
-  background: #fff4da;
-  border: 1px solid #dfba6c;
-  color: #4f3a11;
+  background: rgba(10, 19, 36, 0.96);
+  border: 1px solid rgba(241, 180, 74, 0.32);
+  color: #ffe2a8;
 }
 
 .modal-warning .editor-footer button:first-child {
-  background: #f2d79a;
-  color: #3f2e0d;
+  background: rgba(41, 58, 92, 0.94);
+  color: #e8eefc;
 }
 
 .modal-warning .editor-footer button:last-child {
-  background: linear-gradient(140deg, #d79a2d, #c9871a);
-  color: #fff8ea;
+  background: linear-gradient(140deg, #e0a63a, #c7861b);
+  color: #fff7ea;
 }
 
 .modal-warning .editor-footer button:last-child:hover {
-  background: linear-gradient(140deg, #c8881f, #b87812);
+  background: linear-gradient(140deg, #cf952d, #b87712);
 }
 
 .modal-danger {

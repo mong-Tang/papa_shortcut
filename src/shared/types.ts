@@ -107,6 +107,8 @@ export interface FolderImportCandidate {
 export interface FolderImportScanResult {
   rootPath: string;
   entries: FolderImportCandidate[];
+  topLevelEntries: FolderImportCandidate[];
   scannedDirectoryCount: number;
+  nestedDirectoryCount: number;
   truncated: boolean;
 }
