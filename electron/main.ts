@@ -373,14 +373,26 @@ async function resolveFileIconDataUrl(target: string): Promise<string | null> {
         appendLog(`Icon extract skipped: shortcut icon target missing path=${nativeIconTarget}`);
         return null;
       }
+      if (getMimeTypeFromPath(nativeIconTarget)) {
+        const directDataUrl = toImageDataUrl(nativeIconTarget);
+        if (directDataUrl) {
+          appendLog(`Icon extract shortcut image success: ${nativeTarget} -> ${nativeIconTarget}`);
+          return directDataUrl;
+        }
+        appendLog(`Icon extract skipped: shortcut image load failed path=${nativeIconTarget}`);
+        return null;
+      }
       const icon = await app.getFileIcon(nativeIconTarget, { size: "normal" });
       const dataUrl = nativeImageToDataUrl(icon);
       if (dataUrl) {
         appendLog(`Icon extract shortcut success: ${nativeTarget} -> ${nativeIconTarget}`);
         return dataUrl;
       }
+      appendLog(`Icon extract skipped: shortcut target icon empty path=${nativeIconTarget}`);
+      return null;
     } catch {
       appendLog(`Icon extract failed: readShortcutLink error path=${nativeTarget}`);
+      return null;
     }
   }
 
