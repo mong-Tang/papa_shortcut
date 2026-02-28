@@ -294,8 +294,33 @@ button:disabled {
   border: 1px dashed rgba(189, 212, 255, 0.3);
   display: grid;
   place-items: center;
+  padding: 18px;
   color: rgba(223, 234, 255, 0.72);
   text-align: center;
+}
+
+.empty-state-guide-text {
+  width: min(100%, 340px);
+  text-align: left;
+}
+
+.empty-state-guide-text strong {
+  display: block;
+  margin-bottom: 8px;
+  color: rgba(238, 244, 255, 0.92);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.empty-state-guide-text p {
+  margin: 0;
+  display: grid;
+  gap: 0;
+  color: rgba(223, 234, 255, 0.78);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .empty-state-caption {

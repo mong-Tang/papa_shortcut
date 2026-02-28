@@ -1648,7 +1648,14 @@ export default function App(): JSX.Element {
               {emptyStateImageSrc ? (
                 <img src={emptyStateImageSrc} alt="Empty state" />
               ) : (
-                <div className="empty-state-placeholder">No background image selected.</div>
+                <div className="empty-state-placeholder">
+                  <div className="empty-state-guide-text">
+                    <strong>Small Guide</strong>
+                    <p>Add / Edit로 항목을 등록하세요.</p>
+                    <p>Folder Import로 여러 항목을 추가할 수 있습니다.</p>
+                    <p>더블클릭 또는 Enter로 실행할 수 있습니다.</p>
+                  </div>
+                </div>
               )}
               <div className="empty-state-caption">
                 Select a category. Right-click to change the background image.

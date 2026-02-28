@@ -24,85 +24,24 @@
   "categories": [
     {
       "id": "all",
-      "label": "?꾩껜"
+      "label": "전체"
     },
     {
       "id": "document",
-      "label": "臾몄꽌"
+      "label": "문서"
     },
     {
       "id": "game",
-      "label": "寃뚯엫"
+      "label": "게임"
     },
     {
       "id": "tool",
-      "label": "?꾧뎄"
+      "label": "도구"
     },
     {
       "id": "web",
-      "label": "??
+      "label": "웹"
     }
   ],
-  "items": [
-    {
-      "id": "notepad",
-      "name": "硫붾え??,
-      "categoryId": "tool",
-      "target": "C:/Windows/System32/notepad.exe",
-      "icon": "assets/icons/notepad.svg",
-      "keywords": [
-        "硫붾え",
-        "?띿뒪??
-      ]
-    },
-    {
-      "id": "calc",
-      "name": "怨꾩궛湲?,
-      "categoryId": "tool",
-      "target": "C:/Windows/System32/calc.exe",
-      "icon": "assets/icons/calculator.svg",
-      "keywords": [
-        "?섑븰",
-        "?レ옄"
-      ]
-    },
-    {
-      "id": "explorer",
-      "name": "臾몄꽌",
-      "categoryId": "document",
-      "target": "C:/Users/mongTang/Documents",
-      "icon": "assets/icons/folder.svg",
-      "keywords": [
-        "?대뜑",
-        "?뚯씪"
-      ]
-    },
-    {
-      "id": "naver",
-      "name": "?ㅼ씠踰?,
-      "categoryId": "web",
-      "target": "https://www.naver.com",
-      "icon": "assets/icons/web.svg",
-      "keywords": [
-        "寃??,
-        "?ы꽭"
-      ]
-    },
-    {
-      "id": "steam",
-      "name": "?ㅽ?",
-      "categoryId": "game",
-      "target": "C:/Program Files (x86)/Steam/Steam.exe",
-      "icon": "assets/icons/game.svg",
-      "keywords": [
-        "?ㅽ?",
-        "寃뚯엫"
-      ]
-    }
-  ]
+  "items": []
 }
-
-
-
-
-
