@@ -1,6 +1,6 @@
 {
   "name": "papa-launcher",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Desktop launcher for Windows built with Electron + React",
   "main": "dist-electron/electron/main.js",
   "scripts": {
