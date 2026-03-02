@@ -54,7 +54,7 @@
       }
     ],
     "win": {
-      "icon": "assets/icons/app-icon.ico",
+      "icon": "assets/icons/app-icon.png",
       "signAndEditExecutable": false,
       "target": [
         {
