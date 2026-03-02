@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, shell } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, screen, shell, Tray } from "electron";
 import type { NativeImage } from "electron";
 import type { OpenDialogOptions } from "electron";
 import { spawn, spawnSync } from "node:child_process";
@@ -54,6 +54,7 @@ const SMOKE_ENTER_ARG_PREFIX = "--smoke-enter-item=";
 const LOCAL_STORAGE_ROOT_DIR = "papa-launcher";
 const WIDGET_SIZE_PERSIST_DEBOUNCE_MS = 420;
 const MIN_WIDGET_HEIGHT_PX = 600;
+const TRAY_ICON_RELATIVE_PATH = "assets/icons/app-icon.ico";
 const DEFAULT_RECOVERY_CONFIG: LauncherConfig = {
   version: 2,
   app: {
@@ -88,6 +89,7 @@ const DEFAULT_RECOVERY_CONFIG: LauncherConfig = {
 };
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let cachedConfigRaw: LauncherConfig | null = null;
 let cachedConfigForRenderer: LauncherConfig | null = null;
 let widgetModeEnabled = false;
@@ -115,6 +117,7 @@ let quitFallbackTimer: NodeJS.Timeout | null = null;
 let widgetSizePersistTimer: NodeJS.Timeout | null = null;
 let lastPersistedWidgetSize: { width: number; height: number } | null = null;
 let pendingRecoveryNotice: string | null = null;
+let isQuitting = false;
 
 function configureRuntimePaths(): void {
   const localAppDataPath = process.env.LOCALAPPDATA?.trim();
@@ -215,8 +218,90 @@ function appendLog(message: string): void {
   }
 }
 
+function getTrayIconPath(): string {
+  return path.join(getResourcesRoot(), ...TRAY_ICON_RELATIVE_PATH.split("/"));
+}
+
+function showMainWindowFromTray(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+    registerWidgetShortcut();
+    return;
+  }
+
+  focusMainWindowForSecondInstance();
+}
+
+function hideMainWindowToTray(source: string): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  appendLog(`Main window hidden to tray source=${source}`);
+  mainWindow.hide();
+}
+
+function createTray(): void {
+  if (tray) {
+    return;
+  }
+
+  const trayIconPath = getTrayIconPath();
+  if (!fs.existsSync(trayIconPath)) {
+    appendLog(`Tray icon not found path=${trayIconPath}`);
+    return;
+  }
+
+  tray = new Tray(trayIconPath);
+  tray.setToolTip("Papa Launcher");
+
+  const refreshTrayMenu = (): void => {
+    const isVisible = !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
+
+    tray?.setContextMenu(
+      Menu.buildFromTemplate([
+        {
+          label: isVisible ? "숨기기" : "열기",
+          click: () => {
+            if (isVisible) {
+              hideMainWindowToTray("tray-menu");
+              return;
+            }
+
+            showMainWindowFromTray();
+          },
+        },
+        {
+          label: "종료",
+          click: () => {
+            requestAppQuit("tray-menu");
+          },
+        },
+      ]),
+    );
+  };
+
+  tray.on("click", () => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      hideMainWindowToTray("tray-click");
+      refreshTrayMenu();
+      return;
+    }
+
+    showMainWindowFromTray();
+    refreshTrayMenu();
+  });
+
+  tray.on("right-click", () => {
+    refreshTrayMenu();
+  });
+
+  refreshTrayMenu();
+}
+
 function requestAppQuit(reason: string): void {
   appendLog(`Quit requested reason=${reason}`);
+  isQuitting = true;
 
   if (quitFallbackTimer) {
     clearTimeout(quitFallbackTimer);
@@ -1840,7 +1925,7 @@ function createMainWindow(): void {
     minHeight: isWidgetMode ? MIN_WIDGET_HEIGHT_PX : undefined,
     frame: isWidgetMode ? (widget.frame ?? true) : true,
     alwaysOnTop: isWidgetMode ? (widget.alwaysOnTop ?? true) : false,
-    skipTaskbar: isWidgetMode ? (widget.skipTaskbar ?? false) : false,
+    skipTaskbar: true,
     maximizable: isWidgetMode ? false : true,
     fullscreenable: !isWidgetMode,
     autoHideMenuBar: true,
@@ -1953,11 +2038,17 @@ function createMainWindow(): void {
     scheduleWidgetSizePersistence("window-resize");
   });
 
-  mainWindow.on("close", () => {
-    if (!isWidgetMode) {
+  mainWindow.on("close", (event) => {
+    if (isWidgetMode) {
+      flushWidgetSizePersistence("window-close");
+    }
+
+    if (isQuitting) {
       return;
     }
-    flushWidgetSizePersistence("window-close");
+
+    event.preventDefault();
+    hideMainWindowToTray("window-close");
   });
 
   mainWindow.on("closed", () => {
@@ -2330,6 +2421,7 @@ app.whenReady().then(async () => {
     smokeEnterLaunchMatched = false;
   }
 
+  createTray();
   createMainWindow();
   registerWidgetShortcut();
 
@@ -2349,9 +2441,14 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
+  isQuitting = true;
   if (quitFallbackTimer) {
     clearTimeout(quitFallbackTimer);
     quitFallbackTimer = null;
+  }
+  if (tray) {
+    tray.destroy();
+    tray = null;
   }
   clearWidgetSizePersistTimer();
   lastPersistedWidgetSize = null;
